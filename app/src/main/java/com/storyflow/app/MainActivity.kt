@@ -1,6 +1,7 @@
 package com.storyflow.app
 
 import android.annotation.SuppressLint
+import android.content.Intent
 import android.graphics.Color
 import android.net.Uri
 import android.os.Bundle
@@ -28,7 +29,6 @@ import java.security.MessageDigest
 
 class MainActivity : AppCompatActivity() {
 
-    private val STUDIO_URL = "https://giuseppe.rocks/storyflow/index.html"
     private val COMPOSER_URL = "https://business.facebook.com/latest/story_composer/"
     private val LOGIN_URL = "https://business.facebook.com/"
 
@@ -44,8 +44,13 @@ class MainActivity : AppCompatActivity() {
     private lateinit var metaWebView: WebView
     private lateinit var btnCloseMeta: Button
 
-    private var sfStateJson: String = "null"
-    private var queueRunning: Boolean = false
+    private lateinit var engine: EngineManager
+    private val studioHost by lazy { Uri.parse(getString(R.string.studio_url)).host ?: "" }
+
+    @Volatile private var sfStateJson: String = "null"
+    @Volatile private var queueRunning: Boolean = false
+    // URL corrente della vista Meta: il ponte del motore risponde solo su business.facebook.com.
+    @Volatile private var metaUrl: String = ""
     private val watchdogHandler = Handler(Looper.getMainLooper())
 
     private val watchdogRunnable = object : Runnable {
@@ -63,6 +68,9 @@ class MainActivity : AppCompatActivity() {
     @SuppressLint("SetJavaScriptEnabled")
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+
+        engine = EngineManager(this, getString(R.string.engine_manifest_url), getString(R.string.engine_public_key))
+        Thread { engine.checkForUpdate() }.start()
 
         rootLayout = FrameLayout(this)
 
@@ -98,14 +106,19 @@ class MainActivity : AppCompatActivity() {
             }
 
             webViewClient = object : WebViewClient() {
+                override fun onPageStarted(view: WebView?, url: String?, favicon: android.graphics.Bitmap?) {
+                    super.onPageStarted(view, url, favicon)
+                    metaUrl = url ?: ""
+                }
                 override fun onPageFinished(view: WebView?, url: String?) {
                     super.onPageFinished(view, url)
+                    metaUrl = url ?: ""
                     if (queueRunning && url != null && url.contains("business.facebook.com/latest/story_composer")) {
                         injectComposerScript()
                     }
                 }
             }
-            addJavascriptInterface(StoryFlowBridge(), "StoryFlowNative")
+            addJavascriptInterface(MetaBridge(), "StoryFlowNative")
         }
 
         btnCloseMeta = Button(this).apply {
@@ -134,11 +147,20 @@ class MainActivity : AppCompatActivity() {
             )
             settings.javaScriptEnabled = true
             settings.domStorageEnabled = true
-            settings.allowFileAccess = true
             settings.cacheMode = WebSettings.LOAD_NO_CACHE
             webChromeClient = WebChromeClient()
 
             webViewClient = object : WebViewClient() {
+                // Il pannello resta sul proprio dominio: gli altri link si aprono nel browser.
+                override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean {
+                    val uri = request?.url ?: return false
+                    if (uri.host == studioHost || uri.host == "storyflow.local") return false
+                    if (uri.scheme == "http" || uri.scheme == "https") {
+                        try { startActivity(Intent(Intent.ACTION_VIEW, uri)) } catch (_: Exception) {}
+                    }
+                    return true
+                }
+
                 override fun shouldInterceptRequest(view: WebView?, request: WebResourceRequest?): WebResourceResponse? {
                     val uri = request?.url ?: return null
                     val path = uri.path ?: ""
@@ -173,7 +195,7 @@ class MainActivity : AppCompatActivity() {
                     return super.shouldInterceptRequest(view, request)
                 }
             }
-            addJavascriptInterface(StoryFlowBridge(), "StoryFlowNative")
+            addJavascriptInterface(StudioBridge(), "StoryFlowNative")
         }
 
         CookieManager.getInstance().setAcceptCookie(true)
@@ -183,7 +205,7 @@ class MainActivity : AppCompatActivity() {
         rootLayout.addView(studioWebView)
         setContentView(rootLayout)
 
-        studioWebView.loadUrl(STUDIO_URL)
+        studioWebView.loadUrl(getString(R.string.studio_url))
     }
 
     private fun setMetaMobileLoginMode() {
@@ -213,7 +235,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun loadFreshComposerPage(dryRun: Boolean) {
         setMetaDesktopComposerMode()
-        val hash = if (dryRun) "#zwtest" else "#zwauto"
+        val hash = if (dryRun) "#sftest" else "#sfauto"
         val freshUrl = "${COMPOSER_URL}?sf_ts=${System.currentTimeMillis()}$hash"
         metaWebView.loadUrl(freshUrl)
 
@@ -223,8 +245,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun injectComposerScript() {
         try {
-            val script = assets.open("composer.js").bufferedReader().use { it.readText() }
-            metaWebView.evaluateJavascript(script, null)
+            metaWebView.evaluateJavascript(engine.code(), null)
         } catch (e: Exception) {
             e.printStackTrace()
         }
@@ -411,51 +432,110 @@ class MainActivity : AppCompatActivity() {
     }
 
     // --- BRIDGE NATIVO ---
+    // Due ponti separati: il pannello (StudioBridge) avvia la coda, la pagina Meta (MetaBridge) la esegue
+    // con il motore. Stessa interfaccia window.StoryFlowNative dell'app desktop.
 
-    inner class StoryFlowBridge {
+    private fun buildLastReport(): String {
+        if (sfStateJson == "null") return "{\"available\":false}"
+        val st = JSONObject(sfStateJson)
+        return JSONObject().apply {
+            put("available", true)
+            put("lastError", st.optJSONObject("lastError"))
+            put("log", st.optJSONArray("log"))
+            put("summary", JSONObject().apply {
+                put("ok", st.optInt("ok", 0))
+                put("err", st.optInt("err", 0))
+                put("total", st.optInt("total", 0))
+            })
+        }.toString()
+    }
+
+    inner class StudioBridge {
+
+        @JavascriptInterface
+        fun getPlatform(): String = "android"
 
         @JavascriptInterface
         fun startQueue(payloadJson: String) {
-            runOnUiThread {
-                val obj = JSONObject(payloadJson)
-                val items = obj.getJSONArray("items")
-                val dryRun = obj.optBoolean("dryRun", false)
-                val reqId = obj.optString("reqId", "sf-" + System.currentTimeMillis())
+            val obj = try { JSONObject(payloadJson) } catch (_: Exception) { return }
+            val items = obj.optJSONArray("items") ?: return
+            if (items.length() == 0 || queueRunning) return
+            val dryRun = obj.optBoolean("dryRun", false)
+            val reqId = obj.optString("reqId", "sf-" + System.currentTimeMillis())
 
-                val state = JSONObject().apply {
-                    put("items", items)
-                    put("dryRun", dryRun)
-                    put("done", 0)
-                    put("ok", 0)
-                    put("err", 0)
-                    put("total", items.length())
-                    put("reqId", reqId)
-                    put("log", JSONArray())
-                    put("t", System.currentTimeMillis())
-                }
-                sfStateJson = state.toString()
-                queueRunning = true
-                loadFreshComposerPage(dryRun)
-            }
+            sfStateJson = JSONObject().apply {
+                put("items", items)
+                put("dryRun", dryRun)
+                put("done", 0)
+                put("ok", 0)
+                put("err", 0)
+                put("total", items.length())
+                put("reqId", reqId)
+                put("log", JSONArray())
+                put("t", System.currentTimeMillis())
+            }.toString()
+            queueRunning = true
+            // Prima di aprire Meta cerca un motore più recente (al massimo 5 secondi di attesa).
+            Thread {
+                val checker = Thread { engine.checkForUpdate() }.apply { start() }
+                checker.join(5000)
+                runOnUiThread { loadFreshComposerPage(dryRun) }
+            }.start()
         }
 
         @JavascriptInterface
         fun isQueueRunning(): Boolean = queueRunning
 
         @JavascriptInterface
-        fun getState(): String = sfStateJson
+        fun openMetaLogin() {
+            runOnUiThread {
+                if (!queueRunning) {
+                    setMetaMobileLoginMode()
+                    val cur = metaWebView.url ?: ""
+                    if (!cur.contains("facebook.com")) {
+                        metaWebView.loadUrl(LOGIN_URL)
+                    }
+                }
+                metaContainer.bringToFront()
+                rootLayout.requestLayout()
+            }
+        }
+
+        @JavascriptInterface
+        fun getLastReport(): String = buildLastReport()
+
+        @JavascriptInterface
+        fun getEngineInfo(): String = engine.infoJson()
+    }
+
+    inner class MetaBridge {
+
+        private fun allowed(): Boolean = queueRunning && metaUrl.startsWith("https://business.facebook.com/")
+
+        @JavascriptInterface
+        fun getPlatform(): String = "android"
+
+        @JavascriptInterface
+        fun isQueueRunning(): Boolean = allowed()
+
+        @JavascriptInterface
+        fun getState(): String = if (allowed()) sfStateJson else "null"
 
         @JavascriptInterface
         fun saveState(newStateJson: String) {
+            if (!allowed()) return
             sfStateJson = newStateJson
             CookieManager.getInstance().flush()
         }
 
         @JavascriptInterface
         fun sendProgress(progressJson: String) {
+            if (!allowed()) return
+            // Ri-serializzato: al pannello arriva solo JSON valido.
+            val safeJson = try { JSONObject(progressJson).toString() } catch (_: Exception) { return }
             runOnUiThread {
                 studioWebView.evaluateJavascript(
-                    "window.__onStoryFlowNativeProgress && window.__onStoryFlowNativeProgress($progressJson);",
+                    "window.__onStoryFlowNativeProgress && window.__onStoryFlowNativeProgress($safeJson);",
                     null
                 )
             }
@@ -463,6 +543,7 @@ class MainActivity : AppCompatActivity() {
 
         @JavascriptInterface
         fun trustedClick(x: Double, y: Double, vw: Double, vh: Double) {
+            if (!allowed()) return
             runOnUiThread {
                 metaWebView.requestFocus()
                 val safeVw = if (vw > 0.0) vw.toFloat() else DESKTOP_W.toFloat()
@@ -482,6 +563,7 @@ class MainActivity : AppCompatActivity() {
 
         @JavascriptInterface
         fun trustedDrag(sx: Double, sy: Double, ex: Double, ey: Double, vw: Double, vh: Double) {
+            if (!allowed()) return
             runOnUiThread {
                 metaWebView.requestFocus()
                 val safeVw = if (vw > 0.0) vw.toFloat() else DESKTOP_W.toFloat()
@@ -516,6 +598,7 @@ class MainActivity : AppCompatActivity() {
 
         @JavascriptInterface
         fun nextStory(dryRun: Boolean) {
+            if (!allowed()) return
             runOnUiThread {
                 loadFreshComposerPage(dryRun)
             }
@@ -523,6 +606,7 @@ class MainActivity : AppCompatActivity() {
 
         @JavascriptInterface
         fun finishQueue() {
+            if (!queueRunning) return
             runOnUiThread {
                 queueRunning = false
                 watchdogHandler.removeCallbacks(watchdogRunnable)
@@ -530,37 +614,6 @@ class MainActivity : AppCompatActivity() {
                 rootLayout.requestLayout()
                 CookieManager.getInstance().flush()
             }
-        }
-
-        @JavascriptInterface
-        fun openMetaLogin() {
-            runOnUiThread {
-                if (!queueRunning) {
-                    setMetaMobileLoginMode()
-                    val cur = metaWebView.url ?: ""
-                    if (!cur.contains("facebook.com")) {
-                        metaWebView.loadUrl(LOGIN_URL)
-                    }
-                }
-                metaContainer.bringToFront()
-                rootLayout.requestLayout()
-            }
-        }
-
-        @JavascriptInterface
-        fun getLastReport(): String {
-            if (sfStateJson == "null") return "{\"available\":false}"
-            val st = JSONObject(sfStateJson)
-            return JSONObject().apply {
-                put("available", true)
-                put("lastError", st.optJSONObject("lastError"))
-                put("log", st.optJSONArray("log"))
-                put("summary", JSONObject().apply {
-                    put("ok", st.optInt("ok", 0))
-                    put("err", st.optInt("err", 0))
-                    put("total", st.optInt("total", 0))
-                })
-            }.toString()
         }
     }
 }

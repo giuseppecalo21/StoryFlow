@@ -1,10 +1,56 @@
-/* StoryFlow 3.3.0 — Protezione anti-doppio avvio + rimozione garantita sticker predefinito + Mini HUD live */
+/* StoryFlow Engine — motore unico di pubblicazione per app desktop, app Android ed estensione Chrome.
+ * Viene scaricato dal server (engine/manifest.json firmato) e iniettato nella pagina
+ * https://business.facebook.com/latest/story_composer/ : per correggere un cambio
+ * dell'interfaccia Meta basta pubblicare una nuova versione di questo file.
+ * Le etichette dei pulsanti sono raccolte in UI_LABELS: aggiungere qui nuove lingue.
+ */
 (function () {
   'use strict';
+
+  const ENGINE_VERSION = '4.0.0';
 
   // Impedisce che il watchdog avvii due volte lo script sulla stessa pagina
   if (window.__SF_COMPOSER_ACTIVE__) return;
 
+  const COMPOSER = 'https://business.facebook.com/latest/story_composer/';
+  const AUTO_HASHES = ['#sfauto', '#sftest'];
+  const STICKER_TRIES = 2;
+  const PAUSA = 2000;
+
+  // --- ETICHETTE INTERFACCIA META (una voce per lingua; il confronto ignora maiuscole e spazi) ---
+  const UI_LABELS = {
+    addMedia: { it: ['Aggiungi foto/video', 'Aggiungi foto o video'], en: ['Add photo/video', 'Add photos/videos', 'Add photo or video'] },
+    addLink: { it: ['Aggiungi link'], en: ['Add link'] },
+    editLink: { it: ['Modifica link'], en: ['Edit link'] },
+    apply: { it: ['Applica'], en: ['Apply'] },
+    edit: { it: ['Modifica'], en: ['Edit'] },
+    editPhotoTitle: { it: ['Modifica foto'], en: ['Edit photo', 'Edit image'] },
+    moreStickers: { it: ['Altri adesivi'], en: ['More stickers'] },
+    cancel: { it: ['Annulla'], en: ['Cancel'] },
+    discard: { it: ['Elimina modifiche'], en: ['Discard changes', 'Discard edits'] },
+    share: { it: ['Condividi', 'Condividi ora'], en: ['Share', 'Share now'] },
+    linkStickerHeading: { it: ['Aggiungi adesivo con link', 'Aggiungi adesivo link'], en: ['Add link sticker', 'Add a link sticker'] },
+    linkStickerMenu: { it: ['Link', '🔗 Link'], en: ['Link', '🔗 Link'] },
+    linkStickerAria: { it: ['Crea adesivo con link', 'Crea adesivo link'], en: ['Create link sticker'] },
+    removeAria: { it: ['Rimuovi', 'remove'], en: ['Remove', 'remove'] }
+  };
+  const SHARED_WORDS = '(?:condivisa|pubblicata|shared|published|posted)';
+  const STORY_WORDS = '(?:storia|story)';
+  const SHARED_RE = new RegExp(`${STORY_WORDS}.{0,40}${SHARED_WORDS}|${SHARED_WORDS}.{0,40}${STORY_WORDS}`, 'i');
+
+  const pageLang = () => String(document.documentElement.lang || navigator.language || 'it').slice(0, 2).toLowerCase();
+  const norm = s => String(s || '').normalize('NFC').replace(/\s+/g, ' ').trim().toLowerCase();
+  // Prima la lingua della pagina, poi tutte le altre: funziona anche con lingue non previste
+  // se Meta mostra i testi in inglese o italiano.
+  function labelsFor(key) {
+    const entry = UI_LABELS[key] || {};
+    const lang = pageLang();
+    const ordered = [...(entry[lang] || []), ...Object.keys(entry).filter(k => k !== lang).flatMap(k => entry[k])];
+    return [...new Set(ordered.map(norm))];
+  }
+  const firstLabel = key => (UI_LABELS[key]?.[pageLang()] || UI_LABELS[key]?.it || [key])[0];
+
+  // --- Hook anti-beforeunload e intercettazione del selettore file (contesto pagina) ---
   try {
     const origAdd = EventTarget.prototype.addEventListener;
     EventTarget.prototype.addEventListener = function (type, fn, opt) {
@@ -44,15 +90,28 @@
     notifyInput(event.target);
   }, true);
 
-  const COMPOSER = 'https://business.facebook.com/latest/story_composer/';
-  const STICKER_TRIES = 2;
-  const PAUSA = 2000;
-
+  // --- Trasporto verso l'app ospite ---
+  // native: window.StoryFlowNative (app Android e app desktop)
+  // ext: chrome.runtime.sendMessage (estensione, sia content script sia user script)
   const isNative = () => Boolean(window.StoryFlowNative);
+  const hasExt = () => {
+    try { return typeof chrome !== 'undefined' && Boolean(chrome.runtime?.sendMessage); } catch (_) { return false; }
+  };
   const hash = location.hash;
-  if (!hash.startsWith('#zwauto') && !hash.startsWith('#zwtest') && !(isNative() && window.StoryFlowNative.isQueueRunning())) return;
+  const hashActive = AUTO_HASHES.some(h => hash.startsWith(h));
+  let nativeRunning = false;
+  try { nativeRunning = isNative() && Boolean(window.StoryFlowNative.isQueueRunning()); } catch (_) {}
+  if (!hashActive && !nativeRunning) return;
 
   window.__SF_COMPOSER_ACTIVE__ = true;
+
+  function extCall(cmd, payload = {}) {
+    return new Promise(res => {
+      try {
+        chrome.runtime.sendMessage({ cmd, ...payload }, r => { void chrome.runtime.lastError; res(r); });
+      } catch (_) { res(null); }
+    });
+  }
 
   // Mini HUD in alto a sinistra + mirino rosso per vedere i tocchi in tempo reale senza coprire Meta
   function setHud(text) {
@@ -88,14 +147,15 @@
       if (isNative()) {
         try { return JSON.parse(window.StoryFlowNative.getState() || 'null'); } catch (_) { return null; }
       }
-      return new Promise(res => chrome.storage.local.get(['sf_state'], r => res(r.sf_state)));
+      const r = await extCall('GET_STATE');
+      return r?.state || null;
     },
     async saveState(state) {
       if (isNative()) {
         window.StoryFlowNative.saveState(JSON.stringify(state));
         return;
       }
-      return new Promise(res => chrome.storage.local.set({ sf_state: state }, res));
+      await extCall('SAVE_STATE', { state });
     },
     emitProgress(payload) {
       setHud(payload.message || payload.stage);
@@ -103,7 +163,7 @@
         window.StoryFlowNative.sendProgress(JSON.stringify(payload));
         return;
       }
-      try { chrome.runtime.sendMessage({ cmd: 'SF_PROGRESS', ...payload }, () => { void chrome.runtime.lastError; }); } catch (_) {}
+      void extCall('SF_PROGRESS', payload);
     },
     async trustedClick(x, y) {
       showTouchDot(x, y);
@@ -112,14 +172,20 @@
         await new Promise(r => setTimeout(r, 450));
         return;
       }
-      await chrome.runtime.sendMessage({ cmd: 'TRUSTED_CLICK', x: Math.round(x), y: Math.round(y) });
+      await extCall('TRUSTED_CLICK', { x: Math.round(x), y: Math.round(y) });
+    },
+    canTrustedDrag() {
+      if (isNative()) return typeof window.StoryFlowNative.trustedDrag === 'function';
+      return hasExt();
     },
     async trustedDrag(sx, sy, ex, ey) {
       showTouchDot(ex, ey);
-      if (isNative() && typeof window.StoryFlowNative.trustedDrag === 'function') {
+      if (isNative()) {
         window.StoryFlowNative.trustedDrag(sx, sy, ex, ey, window.innerWidth, window.innerHeight);
         await new Promise(r => setTimeout(r, 700));
+        return;
       }
+      await extCall('TRUSTED_DRAG', { sx: Math.round(sx), sy: Math.round(sy), ex: Math.round(ex), ey: Math.round(ey) });
     },
     nextStory(dryRun) {
       window.__SF_COMPOSER_ACTIVE__ = false;
@@ -127,14 +193,12 @@
         window.StoryFlowNative.nextStory(Boolean(dryRun));
         return;
       }
-      try {
-        chrome.runtime.sendMessage({ cmd: 'NEXT_STORY_NAV', dryRun }, () => {
-          if (chrome.runtime.lastError) {
-            history.replaceState(null, '', COMPOSER + (dryRun ? '#zwtest' : '#zwauto-next'));
-            location.reload();
-          }
-        });
-      } catch (_) { location.reload(); }
+      extCall('NEXT_STORY_NAV', { dryRun }).then(r => {
+        if (!r?.ok) {
+          history.replaceState(null, '', COMPOSER + (dryRun ? '#sftest' : '#sfauto-next'));
+          location.reload();
+        }
+      });
     },
     finishQueue() {
       window.__SF_COMPOSER_ACTIVE__ = false;
@@ -142,16 +206,36 @@
         window.StoryFlowNative.finishQueue();
         return;
       }
-      try { chrome.runtime.sendMessage({ cmd: 'FINISH_QUEUE' }); } catch (_) {}
+      void extCall('FINISH_QUEUE');
     }
   };
 
   let lastStage = 'start', S = null;
   const sleep = ms => new Promise(r => setTimeout(r, ms));
   const txt = e => (e.innerText || '').trim();
-  const btn = (label, root = document) => root
-    ? [...root.querySelectorAll('[role=button]')].filter(e => txt(e) === label && e.getAttribute('aria-disabled') !== 'true').pop()
-    : null;
+
+  function btn(key, root = document) {
+    if (!root) return null;
+    const wanted = labelsFor(key);
+    return [...root.querySelectorAll('[role=button]')]
+      .filter(e => wanted.includes(norm(txt(e))) && e.getAttribute('aria-disabled') !== 'true')
+      .pop() || null;
+  }
+  const ariaSelector = key => labelsFor(key).map(l => `[aria-label="${l.replace(/"/g, '\\"')}" i]`).join(',');
+  const byAria = (key, root = document) => root ? root.querySelector(ariaSelector(key)) : null;
+
+  // Elenco dei pulsanti visibili: finisce nel report d'errore per aggiornare UI_LABELS in poche ore.
+  function visibleButtons(root = document) {
+    const labels = [...(root || document).querySelectorAll('[role=button],button')]
+      .filter(e => e.getBoundingClientRect().width > 0)
+      .map(e => txt(e) || e.getAttribute('aria-label') || '')
+      .map(t => t.replace(/\s+/g, ' ').trim())
+      .filter(t => t && t.length <= 40);
+    return [...new Set(labels)].slice(0, 30).join(' | ');
+  }
+  function notFound(key, what = 'Pulsante', root = document) {
+    return new Error(`${what} «${firstLabel(key)}» non trovato (lingua Meta: ${pageLang()}). Pulsanti visibili: ${visibleButtons(root) || 'nessuno'}`);
+  }
 
   async function waitFor(fn, ms = 15000, step = 250) {
     const end = Date.now() + ms;
@@ -176,6 +260,10 @@
     return new Blob([u8], { type: mime });
   }
 
+  const hostLabel = url => {
+    try { return new URL(url).hostname.replace(/^www\./, '').toUpperCase(); } catch (_) { return 'LEGGI'; }
+  };
+
   function emitStage(stage, rawMessage) {
     lastStage = stage;
     const cleanMsg = String(rawMessage || '').replace(/\bMeta\b/gi, 'il sistema');
@@ -189,6 +277,7 @@
         dryRun: S.dryRun,
         message: cleanMsg,
         failedStage: stage === 'error' ? (S.lastError?.stage || '') : '',
+        engineVersion: ENGINE_VERSION,
         log: S.log
       });
     }
@@ -235,20 +324,25 @@
     document.dispatchEvent(new Event(ARM));
 
     try {
-      const add = await waitFor(() => btn('Aggiungi foto/video'), 25000);
-      if (!add) throw new Error('Pulsante Aggiungi foto/video non trovato');
+      const add = await waitFor(() => btn('addMedia'), 25000);
+      if (!add) throw notFound('addMedia');
       add.click();
 
       await waitFor(() => delivered, 6000, 100);
       if (!delivered) {
-        const candidates = [...new Set([...appearedInputs, ...document.querySelectorAll('input[type="file"]')])];
+        const candidates = [...new Set([...appearedInputs, ...document.querySelectorAll('input[type="file"]')])]
+          .filter(input => input instanceof HTMLInputElement && !input.disabled)
+          .sort((a, b) => {
+            const score = input => (originalInputs.has(input) ? 0 : 4) + (/image|jpeg|jpg|png/i.test(input.accept || '') ? 2 : 0) + (input.isConnected ? 1 : 0);
+            return score(b) - score(a);
+          });
         for (const input of candidates) { if (deliver(input)) break; }
       }
-      if (!delivered) throw new Error('Input file non intercettato');
+      if (!delivered) throw new Error(`Input file non intercettato (input nel DOM: ${document.querySelectorAll('input[type="file"]').length})`);
 
       status('StoryFlow: elaborazione anteprima grafica in corso...');
-      if (!await waitFor(() => btn('Aggiungi link'), 30000)) {
-        throw new Error('Pulsante Aggiungi link non disponibile dopo upload');
+      if (!await waitFor(() => btn('addLink'), 30000)) {
+        throw notFound('addLink', 'Dopo il caricamento, pulsante');
       }
     } finally {
       document.dispatchEvent(new Event(DISARM));
@@ -258,21 +352,18 @@
   }
 
   async function addSwipeLink(url) {
-    btn('Aggiungi link').click();
+    btn('addLink').click();
     const inp = await waitFor(() => document.querySelector('[role=dialog] input[type=url]'), 10000);
     if (!inp) throw new Error('Finestra link non aperta');
     setInput(inp, url);
     await sleep(2000);
-    const ap = await waitFor(() => btn('Applica', inp.closest('[role=dialog]')), 10000);
-    if (!ap) throw new Error('Applica link disattivato');
+    const ap = await waitFor(() => btn('apply', inp.closest('[role=dialog]')), 10000);
+    if (!ap) throw notFound('apply', 'Pulsante della finestra link', inp.closest('[role=dialog]'));
     ap.click();
-    if (!await waitFor(() => btn('Modifica link'), 10000)) throw new Error('Link non salvato');
+    if (!await waitFor(() => btn('editLink'), 10000)) throw notFound('editLink', 'Link non salvato: pulsante');
   }
 
-  const editor = () => [...document.querySelectorAll('[role=dialog]')].find(d => txt(d).startsWith('Modifica foto'));
-
-  function editorImg() {
-    const d = editor(); if (!d) return null;
+  function bigImageOf(d) {
     return [...d.querySelectorAll('img')]
       .map(i => ({ i, h: i.getBoundingClientRect().height }))
       .filter(o => o.h > 150)
@@ -280,13 +371,29 @@
       .map(o => o.i)[0] || null;
   }
 
-  // Riconosce qualsiasi sticker sulla foto senza limiti rigidi di 28px/39px
+  // Editor foto: prima per titolo, poi per struttura (finestra con immagine grande e pulsante Applica)
+  function editor() {
+    const dialogs = [...document.querySelectorAll('[role=dialog]')];
+    const titles = labelsFor('editPhotoTitle');
+    const byTitle = dialogs.find(d => titles.some(t => norm(txt(d)).startsWith(t)));
+    if (byTitle) return byTitle;
+    return dialogs.find(d => !d.querySelector('input[type=url]') && bigImageOf(d) && btn('apply', d)) || null;
+  }
+
+  function editorImg() {
+    const d = editor(); if (!d) return null;
+    return bigImageOf(d);
+  }
+
+  const removeSelector = () => ariaSelector('removeAria');
+
+  // Riconosce qualsiasi sticker sulla foto senza limiti rigidi di altezza
   const findStickers = () => {
     const ed = editor() || document;
     const withRm = [...ed.querySelectorAll('div')].filter(d => {
       if (d.style.position !== 'absolute') return false;
       const h = parseFloat(d.style.height) || d.getBoundingClientRect().height;
-      return h >= 12 && h <= 85 && d.querySelector('button[aria-label="remove"], button[aria-label="Rimuovi"], [aria-label="remove"]');
+      return h >= 12 && h <= 85 && d.querySelector(removeSelector());
     });
     if (withRm.length) return withRm;
     return [...ed.querySelectorAll('div')].filter(d => {
@@ -327,7 +434,7 @@
     const sx = S0.left + S0.width / 2, sy = S0.top + S0.height / 2;
     const ex = I.left + I.width / 2, ey = I.top + 0.88 * I.height;
 
-    if (useHardwareDrag && isNative()) {
+    if (useHardwareDrag && Bridge.canTrustedDrag()) {
       await Bridge.trustedDrag(sx, sy, ex, ey);
       await sleep(PAUSA);
       return;
@@ -350,29 +457,30 @@
   }
 
   function photoEditBtn() {
-    const ml = btn('Modifica link');
+    const ml = btn('editLink');
     if (!ml) return null;
     const mlTop = ml.getBoundingClientRect().top;
+    const wanted = labelsFor('edit');
     const mod = [...document.querySelectorAll('[role=button]')]
-      .filter(e => txt(e) === 'Modifica')
+      .filter(e => wanted.includes(norm(txt(e))))
       .sort((a, b) => Math.abs(a.getBoundingClientRect().top - mlTop) - Math.abs(b.getBoundingClientRect().top - mlTop))[0];
     return mod && Math.abs(mod.getBoundingClientRect().top - mlTop) <= 45 ? mod : null;
   }
 
   async function closeEditor(afterCheck = false) {
     await sleep(PAUSA);
-    const apEd = await waitFor(() => btn('Applica', editor()), afterCheck ? 3000 : 6000);
+    const apEd = await waitFor(() => btn('apply', editor()), afterCheck ? 3000 : 6000);
     if (apEd) {
       apEd.click();
     } else if (afterCheck) {
-      const an = btn('Annulla', editor());
-      if (!an) throw new Error('Annulla di Modifica foto non trovato');
+      const an = btn('cancel', editor());
+      if (!an) throw notFound('cancel', 'Nell\'editor foto, pulsante', editor());
       an.click();
       await sleep(1500);
     } else {
-      throw new Error('Applica di Modifica foto non trovato');
+      throw notFound('apply', 'Nell\'editor foto, pulsante', editor());
     }
-    if (!await waitFor(() => !editor() && btn('Condividi'), 20000)) throw new Error('Editor non chiuso');
+    if (!await waitFor(() => !editor() && btn('share'), 20000)) throw new Error('Editor non chiuso');
     await sleep(PAUSA);
   }
 
@@ -380,8 +488,7 @@
   async function removeExistingStickersInEditor() {
     const ed = editor() || document;
     for (let k = 0; k < 8; k++) {
-      // Cerca direttamente il bottone remove dentro l'editor senza filtrare per 39px/28px!
-      let rm = ed.querySelector('button[aria-label="remove"], button[aria-label="Rimuovi"], [aria-label="remove"], [aria-label="Rimuovi"]');
+      let rm = ed.querySelector(removeSelector());
       if (!rm) {
         // Se non è ancora visibile, tocca il badge [ 🔗 Link ] sopra la foto per far apparire la X
         const st = findStickers()[0];
@@ -390,13 +497,13 @@
           const r = st.getBoundingClientRect();
           st.dispatchEvent(new MouseEvent('mouseover', { clientX: r.left + 5, clientY: r.top + 5, bubbles: true }));
           await sleep(400);
-          rm = ed.querySelector('button[aria-label="remove"], button[aria-label="Rimuovi"], [aria-label="remove"], [aria-label="Rimuovi"]');
+          rm = ed.querySelector(removeSelector());
         }
       }
       if (rm) {
         rm.click();
         await sleep(800);
-      } else if (document.querySelector('[aria-label="Create link sticker"]')) {
+      } else if (byAria('linkStickerAria')) {
         break;
       } else {
         await sleep(500);
@@ -406,51 +513,53 @@
 
   // Trova il pulsante Link nel pannello Adesivi a sinistra
   const findLinkButtonInMenu = () => {
-    const byAria = document.querySelector('[aria-label="Create link sticker"]') ||
-                   document.querySelector('[aria-label="Crea adesivo con link"]');
-    if (byAria) return byAria;
+    const aria = byAria('linkStickerAria');
+    if (aria) return aria;
 
     // Fallback: cerca il pulsante "Link" situato nella colonna "Adesivi" a sinistra della foto
     const ed = editor();
     const img = editorImg();
     if (!ed || !img) return null;
     const imgLeft = img.getBoundingClientRect().left;
+    const wanted = labelsFor('linkStickerMenu');
     return [...ed.querySelectorAll('[role="button"], div, span')].find(el => {
-      const t = txt(el);
-      if (t !== 'Link' && t !== '🔗 Link') return false;
+      if (!wanted.includes(norm(txt(el)))) return false;
       const r = el.getBoundingClientRect();
       return r.width >= 25 && r.width <= 160 && r.height >= 20 && r.height <= 65 && r.right < imgLeft;
     }) || null;
   };
 
+  const stickerHeading = () => {
+    const wanted = labelsFor('linkStickerHeading');
+    return [...document.querySelectorAll('[role=heading]')].find(e => wanted.includes(norm(txt(e))));
+  };
+
   async function addLinkSticker(url, stickerText) {
     const mod = await waitFor(() => photoEditBtn(), 8000);
-    if (!mod) throw new Error('Pulsante Modifica non trovato');
+    if (!mod) throw notFound('edit');
     mod.click();
 
     await waitFor(() => editorImg(), 10000);
     await sleep(800);
 
-    const more = await waitFor(() => { const e = editor(); return e && btn('Altri adesivi', e); }, 10000);
-    if (!more) throw new Error('Altri adesivi non trovato');
+    const more = await waitFor(() => { const e = editor(); return e && btn('moreStickers', e); }, 10000);
+    if (!more) throw notFound('moreStickers', 'Nell\'editor foto, pulsante', editor());
     more.click();
     await sleep(800);
 
     status('StoryFlow: rimozione sticker Link predefinito...');
     await removeExistingStickersInEditor();
 
-    const heading = () => [...document.querySelectorAll('[role=heading]')].find(e => txt(e) === 'Aggiungi adesivo con link');
-
     let h = null;
     for (let attempt = 1; attempt <= 3 && !h; attempt++) {
       let create = await waitFor(findLinkButtonInMenu, 4000);
       if (!create) {
-        const reopenMore = btn('Altri adesivi', editor());
+        const reopenMore = btn('moreStickers', editor());
         if (reopenMore) { reopenMore.click(); await sleep(700); }
         await removeExistingStickersInEditor();
         create = await waitFor(findLinkButtonInMenu, 4000);
       }
-      if (!create) throw new Error('Pulsante adesivo Link non trovato nel menu');
+      if (!create) throw notFound('linkStickerAria', 'Nel menu adesivi, pulsante', editor());
 
       create.scrollIntoView({ block: 'center' });
       await sleep(500);
@@ -461,13 +570,14 @@
       status('StoryFlow: attivazione sticker interattivo...');
       await Bridge.trustedClick(cx, cy);
 
-      h = await waitFor(heading, 6500, 250);
+      h = await waitFor(stickerHeading, 6500, 250);
     }
 
-    if (!h) throw new Error('Popup adesivo Link non aperto dopo il clic automatico');
+    if (!h) throw new Error(`Popup adesivo Link non aperto dopo il clic automatico (lingua Meta: ${pageLang()})`);
 
     status(`StoryFlow: configurazione pulsante (${stickerText})`);
     let pop = h; while (pop && pop.querySelectorAll('input').length < 2) pop = pop.parentElement;
+    if (!pop) throw new Error('Campi dell\'adesivo link non trovati');
     const [iu, it] = pop.querySelectorAll('input');
     setInput(iu, url); await sleep(700);
     setInput(it, stickerText); await sleep(900);
@@ -476,11 +586,11 @@
       setInput(it, stickerText); await sleep(900);
     }
 
-    const ap = await waitFor(() => btn('Applica', pop), 8000);
-    if (!ap) throw new Error('Applica adesivo disattivato');
+    const ap = await waitFor(() => btn('apply', pop), 8000);
+    if (!ap) throw notFound('apply', 'Nell\'adesivo link, pulsante', pop);
     ap.click();
 
-    if (!await waitFor(() => !heading() && goodSticker(stickerText), 12000)) throw new Error('Adesivo non creato');
+    if (!await waitFor(() => !stickerHeading() && goodSticker(stickerText), 12000)) throw new Error('Adesivo non creato');
     await sleep(1000);
 
     let pos = null;
@@ -500,12 +610,11 @@
     mod.click();
     if (!await waitFor(() => editorImg(), 10000)) return { ok: false, why: 'Editor non riaperto' };
     await sleep(PAUSA);
-    const linkBtn = () => document.querySelector('[aria-label="Create link sticker"]');
     let panel = false, found = null;
     for (let k = 0; k < 2 && !found; k++) {
-      const more = await waitFor(() => { const e = editor(); return e && btn('Altri adesivi', e); }, 6000);
+      const more = await waitFor(() => { const e = editor(); return e && btn('moreStickers', e); }, 6000);
       if (more) { more.click(); panel = true; }
-      found = await waitFor(linkBtn, 4500);
+      found = await waitFor(() => byAria('linkStickerAria'), 4500);
     }
     await closeEditor(true);
     if (!panel) return { ok: false, why: 'Pannello Adesivi non aperto' };
@@ -525,8 +634,8 @@
       } catch (err) {
         last = String(err?.message || err);
         if (editor()) {
-          const an = btn('Annulla', editor()); if (an) { an.click(); await sleep(1500); }
-          const sc = btn('Elimina modifiche'); if (sc) { sc.click(); await sleep(1500); }
+          const an = btn('cancel', editor()); if (an) { an.click(); await sleep(1500); }
+          const sc = btn('discard'); if (sc) { sc.click(); await sleep(1500); }
         }
       }
       S.log.push(` ! tentativo sticker ${a}: ${last}`);
@@ -539,12 +648,11 @@
   async function share() {
     if (editor()) throw new Error('Editor ancora aperto prima di Condividi');
     await sleep(PAUSA);
-    const c = btn('Condividi');
-    if (!c) throw new Error('Pulsante Condividi non trovato');
+    const c = btn('share');
+    if (!c) throw notFound('share');
     c.click();
     const ok = await waitFor(() =>
-      !location.pathname.includes('story_composer') ||
-      /storia.{0,40}(condivisa|pubblicata)|(condivisa|pubblicata).{0,40}storia/i.test(document.body.innerText), 90000, 500);
+      !location.pathname.includes('story_composer') || SHARED_RE.test(document.body.innerText), 90000, 500);
     if (ok) await sleep(3500);
     return !!ok;
   }
@@ -558,10 +666,12 @@
       Bridge.finishQueue();
       return;
     }
+    if (!Array.isArray(S.log)) S.log = [];
 
     const it = S.items[0];
     S.total = S.total || S.done + S.items.length;
     const currentIndex = S.done + 1;
+    S.log.push(`Motore ${ENGINE_VERSION} · lingua Meta: ${pageLang()}`);
     emitStage('start', `Avvio storia ${currentIndex} di ${S.total}`);
 
     try {
@@ -576,7 +686,7 @@
       emitStage('link', 'Inserimento collegamento');
       await addSwipeLink(it.url);
       emitStage('sticker', 'Creazione adesivo cliccabile');
-      const v = await stickerVerified(it.url, it.stickerText || 'ZONAWRESTLING.NET');
+      const v = await stickerVerified(it.url, it.stickerText || hostLabel(it.url));
 
       if (S.dryRun) {
         S.done++;
@@ -610,7 +720,7 @@
 
       S.done++;
       S.err++;
-      S.lastError = { stage: failedStage, message, id: String(it.id || ''), at: Date.now() };
+      S.lastError = { stage: failedStage, message, id: String(it.id || ''), at: Date.now(), engineVersion: ENGINE_VERSION, lang: pageLang() };
       S.log.push(`ERRORE ${it.id}: ${message}`);
       await Bridge.saveState(S);
     }
