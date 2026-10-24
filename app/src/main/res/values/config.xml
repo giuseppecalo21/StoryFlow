@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Indirizzi del servizio StoryFlow: cambiali qui quando sposti pannello o motore su un altro dominio. -->
+<resources>
+    <string name="studio_url" translatable="false">https://giuseppe.rocks/storyflow/index.html</string>
+    <string name="engine_manifest_url" translatable="false">https://giuseppe.rocks/storyflow/engine/manifest.json</string>
+    <!-- Chiave pubblica per verificare la firma del motore: la scrive "node tools/engine-keygen.mjs" (repository StoryFlowWeb). -->
+    <string name="engine_public_key" translatable="false"></string>
+</resources>
