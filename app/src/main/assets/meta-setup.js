@@ -86,17 +86,19 @@
         row.append(button('Annulla', '', () => finish({ ok: false, reason: 'cancel' })));
         body.appendChild(row);
       }
-      function showChoices(lines) {
+      // choices: testi da proporre; hint: spiegazione facoltativa sotto la domanda.
+      function showChoices(choices, hint) {
         stage = 'choose';
-        body.innerHTML = '<b>Quale di questi è il nome giusto?</b>';
+        body.innerHTML = '<b>Quale testo usiamo?</b>';
+        if (hint) { const p = document.createElement('p'); p.textContent = hint; body.appendChild(p); }
         const row = document.createElement('div'); row.className = 'row';
-        lines.forEach(line => row.append(button(line, 'choice', () => showConfirm(line))));
+        choices.forEach(text => row.append(button(text, 'choice', () => showConfirm(text))));
         row.append(button('Scegli di nuovo', '', () => showPick()));
         body.appendChild(row);
       }
       function showConfirm(text) {
         stage = 'confirm';
-        body.innerHTML = '<b>Hai scelto <span class="sel"></span></b><p>Lo useremo esattamente così, lettera per lettera.</p>';
+        body.innerHTML = '<b>Hai scelto <span class="sel"></span></b><p>Lo useremo esattamente così, lettera per lettera. Potrai comunque modificarlo nel pannello.</p>';
         body.querySelector('.sel').textContent = text;
         const row = document.createElement('div'); row.className = 'row';
         row.append(
@@ -118,6 +120,17 @@
         for (let i = 0; el && i < 4; i++, el = el.parentElement) if (linesOf(el).length) return el;
         return null;
       }
+      // La riga intera che contiene il testo cliccato, es. "Nome Pagina e nome_profilo" quando si clicca
+      // solo sul nome della Pagina: si risale finché il testo resta su una sola riga.
+      function wholeLine(el) {
+        let best = null;
+        for (let up = el && el.parentElement, i = 0; up && up !== document.body && i < 4; up = up.parentElement, i++) {
+          const text = String(up.innerText || '').trim();
+          if (!text || text.includes('\n') || text.length > MAX_LEN) break;
+          best = { el: up, text };
+        }
+        return best;
+      }
 
       // Durante la scelta i clic non arrivano a Meta: niente menu aperti né pulsanti premuti per sbaglio.
       // Sugli eventi touch niente preventDefault, altrimenti il tocco non diventa un clic.
@@ -131,8 +144,15 @@
         const el = targetOf(e);
         const lines = linesOf(el);
         if (!lines.length) return showPick('Qui non c’è testo: clicca proprio sul nome.');
+        if (lines.length > 1) { highlight(el); return showChoices(lines); }
+        const line = wholeLine(el);
+        if (line && line.text !== lines[0]) {
+          highlight(line.el);
+          return showChoices([line.text, lines[0]],
+            'Se pubblichi su Facebook e Instagram insieme, scegli tutta la scritta: così controlliamo anche che siano selezionati entrambi.');
+        }
         highlight(el);
-        if (lines.length === 1) showConfirm(lines[0]); else showChoices(lines);
+        showConfirm(lines[0]);
       };
       const SWALLOW = ['pointerdown', 'pointerup', 'mousedown', 'mouseup', 'touchstart', 'touchend', 'dblclick', 'contextmenu'];
 
