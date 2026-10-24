@@ -53,6 +53,23 @@ class MainActivity : AppCompatActivity() {
     @Volatile private var metaUrl: String = ""
     private val watchdogHandler = Handler(Looper.getMainLooper())
 
+    // Onboarding: scelta ("pick") o verifica ("verify") del nome della pagina nella pagina delle storie
+    // di Meta, con assets/meta-setup.js. Mai insieme a una coda di pubblicazione.
+    @Volatile private var setupMode: String? = null
+    private var setupText: String = ""
+    private var setupInjected = false
+    private val setupTimeout = Runnable { finishSetup(JSONObject().put("ok", false).put("reason", "timeout")) }
+    private val setupLoginCheck = Runnable {
+        val url = metaWebView.url ?: ""
+        if (setupMode != null && !setupInjected && !url.contains("business.facebook.com/latest/story_composer")) {
+            // Meta ha mandato al login: lasciamo la vista Meta aperta per accedere.
+            setMetaMobileLoginMode()
+            metaContainer.bringToFront()
+            rootLayout.requestLayout()
+            finishSetup(JSONObject().put("ok", false).put("reason", "login"))
+        }
+    }
+
     private val watchdogRunnable = object : Runnable {
         override fun run() {
             if (queueRunning) {
@@ -109,12 +126,24 @@ class MainActivity : AppCompatActivity() {
                 override fun onPageStarted(view: WebView?, url: String?, favicon: android.graphics.Bitmap?) {
                     super.onPageStarted(view, url, favicon)
                     metaUrl = url ?: ""
+                    // La pagina è cambiata dopo l'avvio della scelta: lo script iniettato non risponderà più.
+                    if (setupMode != null && setupInjected) {
+                        finishSetup(JSONObject().put("ok", false).put("reason", "navigated"))
+                    }
                 }
                 override fun onPageFinished(view: WebView?, url: String?) {
                     super.onPageFinished(view, url)
                     metaUrl = url ?: ""
                     if (queueRunning && url != null && url.contains("business.facebook.com/latest/story_composer")) {
                         injectComposerScript()
+                    }
+                    if (setupMode != null && !setupInjected) {
+                        if (url != null && url.contains("business.facebook.com/latest/story_composer")) {
+                            injectSetupScript()
+                        } else {
+                            watchdogHandler.removeCallbacks(setupLoginCheck)
+                            watchdogHandler.postDelayed(setupLoginCheck, 3000)
+                        }
                     }
                 }
             }
@@ -249,6 +278,73 @@ class MainActivity : AppCompatActivity() {
         } catch (e: Exception) {
             e.printStackTrace()
         }
+    }
+
+    // --- ONBOARDING: NOME DELLA PAGINA META ---
+
+    private fun startSetup(mode: String, text: String) {
+        if (queueRunning || setupMode != null) {
+            deliverSetupResult(JSONObject().put("ok", false).put("reason", "busy"))
+            return
+        }
+        setupMode = mode
+        setupText = text.take(200)
+        setupInjected = false
+        setMetaDesktopComposerMode()
+        metaWebView.loadUrl("${COMPOSER_URL}?sf_setup=${System.currentTimeMillis()}")
+        if (mode == "pick") {
+            metaContainer.bringToFront()
+            rootLayout.requestLayout()
+        }
+        watchdogHandler.removeCallbacks(setupTimeout)
+        watchdogHandler.postDelayed(setupTimeout, if (mode == "pick") 6 * 60 * 1000L else 60 * 1000L)
+    }
+
+    private fun injectSetupScript() {
+        val mode = setupMode ?: return
+        setupInjected = true
+        watchdogHandler.removeCallbacks(setupLoginCheck)
+        val code = try {
+            assets.open("meta-setup.js").bufferedReader().use { it.readText() }
+        } catch (e: Exception) {
+            finishSetup(JSONObject().put("ok", false).put("reason", "error"))
+            return
+        }
+        // La pagina desktop è rimpicciolita per stare nello schermo: il riquadro della scelta va ingrandito.
+        val zoom = (resources.displayMetrics.density / metaWebView.scaleX.coerceAtLeast(0.1f)).coerceIn(1f, 6f)
+        val call = if (mode == "pick") "window.__sfMetaSetup.pick({zoom:$zoom})"
+            else "window.__sfMetaSetup.verify(${JSONObject.quote(setupText)})"
+        metaWebView.evaluateJavascript(
+            "$code\n;$call.then(function(r){window.StoryFlowNative.setupResult(JSON.stringify(r));});",
+            null
+        )
+    }
+
+    private fun finishSetup(result: JSONObject) {
+        val mode = setupMode ?: return
+        setupMode = null
+        setupInjected = false
+        watchdogHandler.removeCallbacks(setupTimeout)
+        watchdogHandler.removeCallbacks(setupLoginCheck)
+        if (mode == "pick" && result.optString("reason") != "login") {
+            studioWebView.bringToFront()
+            rootLayout.requestLayout()
+        }
+        deliverSetupResult(result)
+    }
+
+    private fun deliverSetupResult(result: JSONObject) {
+        // Ri-serializzato con i soli campi attesi: al pannello arriva solo JSON valido.
+        val safe = JSONObject().apply {
+            put("ok", result.optBoolean("ok", false))
+            put("reason", result.optString("reason", "").take(30))
+            put("text", result.optString("text", "").take(200))
+            put("suggestion", result.optString("suggestion", "").take(200))
+        }.toString()
+        studioWebView.evaluateJavascript(
+            "window.__onStoryFlowSetupResult && window.__onStoryFlowSetupResult($safe);",
+            null
+        )
     }
 
     // --- MOTORE FEED E IMMAGINI NATIVO (ZERO-CACHE) ---
@@ -456,10 +552,32 @@ class MainActivity : AppCompatActivity() {
         fun getPlatform(): String = "android"
 
         @JavascriptInterface
+        fun pickMetaTarget() {
+            runOnUiThread { startSetup("pick", "") }
+        }
+
+        @JavascriptInterface
+        fun verifyMetaTarget(text: String) {
+            runOnUiThread { startSetup("verify", text) }
+        }
+
+        @JavascriptInterface
+        fun cancelMetaSetup() {
+            runOnUiThread {
+                if (setupMode == null) return@runOnUiThread
+                if (setupInjected) {
+                    metaWebView.evaluateJavascript("window.__sfMetaSetup && window.__sfMetaSetup.cancel()", null)
+                } else {
+                    finishSetup(JSONObject().put("ok", false).put("reason", "cancel"))
+                }
+            }
+        }
+
+        @JavascriptInterface
         fun startQueue(payloadJson: String) {
             val obj = try { JSONObject(payloadJson) } catch (_: Exception) { return }
             val items = obj.optJSONArray("items") ?: return
-            if (items.length() == 0 || queueRunning) return
+            if (items.length() == 0 || queueRunning || setupMode != null) return
             val dryRun = obj.optBoolean("dryRun", false)
             val reqId = obj.optString("reqId", "sf-" + System.currentTimeMillis())
 
@@ -594,6 +712,13 @@ class MainActivity : AppCompatActivity() {
                 metaWebView.dispatchTouchEvent(up)
                 up.recycle()
             }
+        }
+
+        @JavascriptInterface
+        fun setupResult(resultJson: String) {
+            if (!metaUrl.startsWith("https://business.facebook.com/")) return
+            val result = try { JSONObject(resultJson) } catch (_: Exception) { return }
+            runOnUiThread { if (setupMode != null) finishSetup(result) }
         }
 
         @JavascriptInterface
