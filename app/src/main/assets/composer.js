@@ -7,7 +7,7 @@
 (function () {
   'use strict';
 
-  const ENGINE_VERSION = '4.0.0';
+  const ENGINE_VERSION = '4.0.1';
 
   // Impedisce che il watchdog avvii due volte lo script sulla stessa pagina
   if (window.__SF_COMPOSER_ACTIVE__) return;
@@ -50,6 +50,23 @@
   }
   const firstLabel = key => (UI_LABELS[key]?.[pageLang()] || UI_LABELS[key]?.it || [key])[0];
 
+  // --- Trasporto verso l'app ospite ---
+  // native: window.StoryFlowNative (app Android e app desktop)
+  // ext: chrome.runtime.sendMessage (estensione, sia content script sia user script)
+  const isNative = () => Boolean(window.StoryFlowNative);
+  const hasExt = () => {
+    try { return typeof chrome !== 'undefined' && Boolean(chrome.runtime?.sendMessage); } catch (_) { return false; }
+  };
+  const hash = location.hash;
+  const hashActive = AUTO_HASHES.some(h => hash.startsWith(h));
+  let nativeRunning = false;
+  try { nativeRunning = isNative() && Boolean(window.StoryFlowNative.isQueueRunning()); } catch (_) {}
+  // Senza una coda attiva il motore non tocca la pagina: nessun hook resta installato
+  // durante l'uso normale del composer e le iniezioni ripetute non lo duplicano.
+  if (!hashActive && !nativeRunning) return;
+
+  window.__SF_COMPOSER_ACTIVE__ = true;
+
   // --- Hook anti-beforeunload e intercettazione del selettore file (contesto pagina) ---
   try {
     const origAdd = EventTarget.prototype.addEventListener;
@@ -90,20 +107,6 @@
     notifyInput(event.target);
   }, true);
 
-  // --- Trasporto verso l'app ospite ---
-  // native: window.StoryFlowNative (app Android e app desktop)
-  // ext: chrome.runtime.sendMessage (estensione, sia content script sia user script)
-  const isNative = () => Boolean(window.StoryFlowNative);
-  const hasExt = () => {
-    try { return typeof chrome !== 'undefined' && Boolean(chrome.runtime?.sendMessage); } catch (_) { return false; }
-  };
-  const hash = location.hash;
-  const hashActive = AUTO_HASHES.some(h => hash.startsWith(h));
-  let nativeRunning = false;
-  try { nativeRunning = isNative() && Boolean(window.StoryFlowNative.isQueueRunning()); } catch (_) {}
-  if (!hashActive && !nativeRunning) return;
-
-  window.__SF_COMPOSER_ACTIVE__ = true;
 
   function extCall(cmd, payload = {}) {
     return new Promise(res => {

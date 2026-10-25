@@ -37,6 +37,7 @@ class MainActivity : AppCompatActivity() {
 
     private val DESKTOP_W = 1440
     private val DESKTOP_H = 1200
+    private val DRAG_STEP_MS = 16L
 
     private lateinit var rootLayout: FrameLayout
     private lateinit var studioWebView: WebView
@@ -574,25 +575,28 @@ class MainActivity : AppCompatActivity() {
                 val endY = (ey.toFloat() / safeVh) * metaWebView.height.toFloat()
 
                 val downTime = SystemClock.uptimeMillis()
-                var evTime = downTime
-                val down = MotionEvent.obtain(downTime, evTime, MotionEvent.ACTION_DOWN, startX, startY, 0)
+                val down = MotionEvent.obtain(downTime, downTime, MotionEvent.ACTION_DOWN, startX, startY, 0)
                 metaWebView.dispatchTouchEvent(down)
                 down.recycle()
 
+                // Un passo ogni DRAG_STEP_MS, come su desktop ed estensione: Chromium e React
+                // ricevono il movimento distribuito nel tempo invece che tutto nello stesso frame.
+                // Durata totale ~425 ms, entro i 700 ms che il motore attende dopo trustedDrag.
                 val steps = 25
                 for (i in 1..steps) {
-                    evTime += 18
-                    val cx = startX + (endX - startX) * i / steps
-                    val cy = startY + (endY - startY) * i / steps
-                    val move = MotionEvent.obtain(downTime, evTime, MotionEvent.ACTION_MOVE, cx, cy, 0)
-                    metaWebView.dispatchTouchEvent(move)
-                    move.recycle()
+                    metaWebView.postDelayed({
+                        val cx = startX + (endX - startX) * i / steps
+                        val cy = startY + (endY - startY) * i / steps
+                        val move = MotionEvent.obtain(downTime, SystemClock.uptimeMillis(), MotionEvent.ACTION_MOVE, cx, cy, 0)
+                        metaWebView.dispatchTouchEvent(move)
+                        move.recycle()
+                    }, i * DRAG_STEP_MS)
                 }
-
-                evTime += 25
-                val up = MotionEvent.obtain(downTime, evTime, MotionEvent.ACTION_UP, endX, endY, 0)
-                metaWebView.dispatchTouchEvent(up)
-                up.recycle()
+                metaWebView.postDelayed({
+                    val up = MotionEvent.obtain(downTime, SystemClock.uptimeMillis(), MotionEvent.ACTION_UP, endX, endY, 0)
+                    metaWebView.dispatchTouchEvent(up)
+                    up.recycle()
+                }, steps * DRAG_STEP_MS + 25)
             }
         }
 

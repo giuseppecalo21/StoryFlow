@@ -10,3 +10,14 @@
 #-keepclassmembers class fqcn.of.javascript.interface.for.webview {
 #   public *;
 #}
+
+# Ponti JavaScript del pannello e della pagina Meta (window.StoryFlowNative):
+# i metodi @JavascriptInterface vengono chiamati per nome dalle WebView e
+# non devono essere rinominati o rimossi, anche se un giorno l'ottimizzazione
+# R8 dovesse includere il pacchetto dell'app.
+-keepclassmembers class com.storyflow.app.MainActivity$StudioBridge {
+    @android.webkit.JavascriptInterface <methods>;
+}
+-keepclassmembers class com.storyflow.app.MainActivity$MetaBridge {
+    @android.webkit.JavascriptInterface <methods>;
+}
