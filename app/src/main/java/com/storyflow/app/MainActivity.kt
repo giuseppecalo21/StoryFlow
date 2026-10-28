@@ -13,9 +13,12 @@ import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
+import android.view.WindowManager
 import android.webkit.*
 import android.widget.Button
 import android.widget.FrameLayout
+import android.widget.Toast
+import androidx.activity.OnBackPressedCallback
 import androidx.appcompat.app.AppCompatActivity
 import org.json.JSONArray
 import org.json.JSONObject
@@ -38,6 +41,9 @@ class MainActivity : AppCompatActivity() {
     private val DESKTOP_W = 1440
     private val DESKTOP_H = 1200
     private val DRAG_STEP_MS = 16L
+    // Senza avanzamenti per 4 minuti la coda si chiude con un errore, come nell'app desktop:
+    // la schermata di pubblicazione del pannello non si può chiudere a mano.
+    private val STALL_TIMEOUT_MS = 4 * 60 * 1000L
 
     private lateinit var rootLayout: FrameLayout
     private lateinit var studioWebView: WebView
@@ -50,6 +56,9 @@ class MainActivity : AppCompatActivity() {
 
     @Volatile private var sfStateJson: String = "null"
     @Volatile private var queueRunning: Boolean = false
+    // "Ferma la coda dopo questa storia": la coda si chiude alla prossima storia, le altre restano nel pannello.
+    @Volatile private var stopAfterCurrent: Boolean = false
+    @Volatile private var lastProgressAt: Long = 0L
     // URL corrente della vista Meta: il ponte del motore risponde solo su business.facebook.com.
     @Volatile private var metaUrl: String = ""
     private val watchdogHandler = Handler(Looper.getMainLooper())
@@ -74,12 +83,23 @@ class MainActivity : AppCompatActivity() {
     private val watchdogRunnable = object : Runnable {
         override fun run() {
             if (queueRunning) {
+                if (SystemClock.elapsedRealtime() - lastProgressAt > STALL_TIMEOUT_MS) {
+                    failQueue("Nessun avanzamento da 4 minuti: la pagina Meta potrebbe essere bloccata.")
+                    return
+                }
                 val url = metaWebView.url ?: ""
                 if (url.contains("business.facebook.com/latest/story_composer")) {
                     injectComposerScript()
                 }
                 watchdogHandler.postDelayed(this, 2000)
             }
+        }
+    }
+
+    // Durante la coda il tasto Indietro non chiude l'app: si fermerebbe la pubblicazione a metà.
+    private val queueBackCallback = object : OnBackPressedCallback(false) {
+        override fun handleOnBackPressed() {
+            Toast.makeText(this@MainActivity, "Pubblicazione in corso: attendi che finisca.", Toast.LENGTH_SHORT).show()
         }
     }
 
@@ -234,6 +254,7 @@ class MainActivity : AppCompatActivity() {
         rootLayout.addView(metaContainer)
         rootLayout.addView(studioWebView)
         setContentView(rootLayout)
+        onBackPressedDispatcher.addCallback(this, queueBackCallback)
 
         studioWebView.loadUrl(getString(R.string.studio_url))
     }
@@ -271,6 +292,82 @@ class MainActivity : AppCompatActivity() {
 
         watchdogHandler.removeCallbacks(watchdogRunnable)
         watchdogHandler.postDelayed(watchdogRunnable, 2000)
+    }
+
+    // --- CODA: SCHERMO ACCESO, FINE E INTERRUZIONE ---
+
+    private fun beginQueueUi() {
+        window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        queueBackCallback.isEnabled = true
+        studioWebView.bringToFront()
+        rootLayout.requestLayout()
+    }
+
+    private fun endQueue() {
+        queueRunning = false
+        stopAfterCurrent = false
+        watchdogHandler.removeCallbacks(watchdogRunnable)
+        window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        queueBackCallback.isEnabled = false
+        studioWebView.bringToFront()
+        rootLayout.requestLayout()
+        CookieManager.getInstance().flush()
+    }
+
+    private fun deliverProgress(progress: JSONObject) {
+        studioWebView.evaluateJavascript(
+            "window.__onStoryFlowNativeProgress && window.__onStoryFlowNativeProgress(${progress});",
+            null
+        )
+    }
+
+    private fun currentState(): JSONObject? = try { JSONObject(sfStateJson) } catch (_: Exception) { null }
+
+    // Il motore chiama nextStory sia per passare alla storia successiva sia per riprovare quella attuale:
+    // un nuovo tentativo ha _retries sulla prima storia della coda.
+    private fun isRetry(st: JSONObject): Boolean =
+        (st.optJSONArray("items")?.optJSONObject(0)?.optInt("_retries", 0) ?: 0) > 0
+
+    private fun stopQueue(st: JSONObject) {
+        val items = st.optJSONArray("items") ?: JSONArray()
+        val remaining = JSONArray()
+        for (i in 0 until items.length()) {
+            items.optJSONObject(i)?.optString("id")?.takeIf { it.isNotEmpty() }?.let { remaining.put(it.take(100)) }
+        }
+        st.optJSONArray("log")?.put("Coda fermata dall'utente: ${remaining.length()} storie restano in coda")
+        sfStateJson = st.toString()
+        val done = st.optInt("done", 0)
+        val total = st.optInt("total", done + remaining.length())
+        deliverProgress(JSONObject().apply {
+            put("stage", "stopped")
+            put("index", done.coerceIn(1, total.coerceAtLeast(1)))
+            put("total", total)
+            put("dryRun", st.optBoolean("dryRun", false))
+            put("ok", st.optInt("ok", 0))
+            put("err", st.optInt("err", 0))
+            put("remainingIds", remaining)
+            put("message", "Coda fermata su richiesta")
+        })
+        endQueue()
+    }
+
+    private fun failQueue(message: String) {
+        if (!queueRunning) return
+        val st = currentState() ?: JSONObject()
+        st.put("err", st.optInt("err", 0) + 1)
+        st.put("lastError", JSONObject().put("stage", "start").put("message", message).put("at", System.currentTimeMillis()))
+        val log = st.optJSONArray("log") ?: JSONArray().also { st.put("log", it) }
+        log.put("ERRORE: $message")
+        sfStateJson = st.toString()
+        deliverProgress(JSONObject().apply {
+            put("stage", "error")
+            put("index", st.optInt("done", 0) + 1)
+            put("total", st.optInt("total", 1))
+            put("dryRun", st.optBoolean("dryRun", false))
+            put("message", message)
+            put("log", log)
+        })
+        endQueue()
     }
 
     private fun injectComposerScript() {
@@ -594,6 +691,9 @@ class MainActivity : AppCompatActivity() {
                 put("t", System.currentTimeMillis())
             }.toString()
             queueRunning = true
+            stopAfterCurrent = false
+            lastProgressAt = SystemClock.elapsedRealtime()
+            runOnUiThread { beginQueueUi() }
             // Prima di aprire Meta cerca un motore più recente (al massimo 5 secondi di attesa).
             Thread {
                 val checker = Thread { engine.checkForUpdate() }.apply { start() }
@@ -606,14 +706,19 @@ class MainActivity : AppCompatActivity() {
         fun isQueueRunning(): Boolean = queueRunning
 
         @JavascriptInterface
+        fun setStopAfterCurrent(stop: Boolean) {
+            stopAfterCurrent = stop && queueRunning
+        }
+
+        @JavascriptInterface
         fun openMetaLogin() {
             runOnUiThread {
-                if (!queueRunning) {
-                    setMetaMobileLoginMode()
-                    val cur = metaWebView.url ?: ""
-                    if (!cur.contains("facebook.com")) {
-                        metaWebView.loadUrl(LOGIN_URL)
-                    }
+                // Durante la coda la vista Meta resta nascosta dietro la schermata di pubblicazione.
+                if (queueRunning) return@runOnUiThread
+                setMetaMobileLoginMode()
+                val cur = metaWebView.url ?: ""
+                if (!cur.contains("facebook.com")) {
+                    metaWebView.loadUrl(LOGIN_URL)
                 }
                 metaContainer.bringToFront()
                 rootLayout.requestLayout()
@@ -651,13 +756,13 @@ class MainActivity : AppCompatActivity() {
         fun sendProgress(progressJson: String) {
             if (!allowed()) return
             // Ri-serializzato: al pannello arriva solo JSON valido.
-            val safeJson = try { JSONObject(progressJson).toString() } catch (_: Exception) { return }
-            runOnUiThread {
-                studioWebView.evaluateJavascript(
-                    "window.__onStoryFlowNativeProgress && window.__onStoryFlowNativeProgress($safeJson);",
-                    null
-                )
+            val progress = try { JSONObject(progressJson) } catch (_: Exception) { return }
+            lastProgressAt = SystemClock.elapsedRealtime()
+            // La storia in lavorazione è la prima della coda salvata dal motore: il pannello ne mostra l'anteprima.
+            currentState()?.optJSONArray("items")?.optJSONObject(0)?.optString("id")?.let {
+                if (it.isNotEmpty()) progress.put("itemId", it.take(100))
             }
+            runOnUiThread { deliverProgress(progress) }
         }
 
         @JavascriptInterface
@@ -729,6 +834,12 @@ class MainActivity : AppCompatActivity() {
         fun nextStory(dryRun: Boolean) {
             if (!allowed()) return
             runOnUiThread {
+                if (!queueRunning) return@runOnUiThread
+                val st = currentState()
+                if (stopAfterCurrent && st != null && !isRetry(st)) {
+                    stopQueue(st)
+                    return@runOnUiThread
+                }
                 loadFreshComposerPage(dryRun)
             }
         }
@@ -736,13 +847,7 @@ class MainActivity : AppCompatActivity() {
         @JavascriptInterface
         fun finishQueue() {
             if (!queueRunning) return
-            runOnUiThread {
-                queueRunning = false
-                watchdogHandler.removeCallbacks(watchdogRunnable)
-                studioWebView.bringToFront()
-                rootLayout.requestLayout()
-                CookieManager.getInstance().flush()
-            }
+            runOnUiThread { endQueue() }
         }
     }
 }
