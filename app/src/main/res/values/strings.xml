@@ -1,3 +1,8 @@
 <resources>
     <string name="app_name">StoryFlow</string>
+    <!-- Testi dell'app (inglese: lingua di riserva). Le traduzioni sono in values-it, values-es, values-pt, values-fr. -->
+    <string name="back_to_studio">✓ Back to StoryFlow Studio</string>
+    <string name="publishing_wait">Publishing in progress: wait for it to finish.</string>
+    <string name="queue_stalled">No progress for 4 minutes: the Meta page may be stuck.</string>
+    <string name="queue_stopped">Queue stopped on request</string>
 </resources>

@@ -2,9 +2,10 @@
  * StoryFlow – strumenti per l'onboarding nella pagina delle storie di Meta Business Suite
  * (https://business.facebook.com/latest/story_composer/). Non pubblica nulla.
  *
- *   window.__sfMetaSetup.pick({zoom})  l'utente clicca sul nome della sua Pagina/profilo e lo copiamo
+ *   window.__sfMetaSetup.pick({zoom, lang})  l'utente clicca sul nome della sua Pagina/profilo e lo copiamo
  *                                      esattamente com'è: { ok, text } oppure { ok:false, reason }.
- *                                      zoom ingrandisce il riquadro (Android mostra la pagina desktop rimpicciolita)
+ *                                      zoom ingrandisce il riquadro (Android mostra la pagina desktop rimpicciolita);
+ *                                      lang è la lingua del pannello (it, en, es, pt, fr; altrimenti quella del browser)
  *   window.__sfMetaSetup.verify(text)  stesso controllo del motore prima di pubblicare
  *                                      (document.body.innerText contiene il testo): { ok, reason, suggestion }
  *   window.__sfMetaSetup.cancel()      chiude il selettore
@@ -24,6 +25,47 @@
 
   let active = null;
 
+  // Testi del riquadro, nella lingua del pannello.
+  const TEXTS = {
+    it: { pickTitle: 'Clicca sul nome della tua Pagina o del tuo profilo Instagram',
+      pickText: 'Lo trovi nel riquadro che indica dove verrà pubblicata la storia. Tranquillo: non pubblichiamo nulla.',
+      cancel: 'Annulla', which: 'Quale testo usiamo?', again: 'Scegli di nuovo', chosen: 'Hai scelto',
+      chosenText: 'Lo useremo esattamente così, lettera per lettera. Potrai comunque modificarlo nel pannello.',
+      use: 'Usa questo nome', noText: 'Qui non c’è testo: clicca proprio sul nome.',
+      both: 'Se pubblichi su Facebook e Instagram insieme, scegli tutta la scritta: così controlliamo anche che siano selezionati entrambi.' },
+    en: { pickTitle: 'Click the name of your Page or your Instagram profile',
+      pickText: 'You’ll find it in the box that shows where the story will be published. Don’t worry: we won’t publish anything.',
+      cancel: 'Cancel', which: 'Which text should we use?', again: 'Choose again', chosen: 'You chose',
+      chosenText: 'We’ll use it exactly like this, letter for letter. You can still edit it in the panel.',
+      use: 'Use this name', noText: 'There’s no text here: click right on the name.',
+      both: 'If you publish to Facebook and Instagram together, choose the whole text: that way we also check that both are selected.' },
+    es: { pickTitle: 'Haz clic en el nombre de tu página o de tu perfil de Instagram',
+      pickText: 'Está en el recuadro que indica dónde se publicará la historia. Tranquilo: no publicamos nada.',
+      cancel: 'Cancelar', which: '¿Qué texto usamos?', again: 'Elegir de nuevo', chosen: 'Has elegido',
+      chosenText: 'Lo usaremos tal cual, letra por letra. De todos modos, podrás cambiarlo en el panel.',
+      use: 'Usar este nombre', noText: 'Aquí no hay texto: haz clic justo sobre el nombre.',
+      both: 'Si publicas en Facebook e Instagram a la vez, elige el texto completo: así comprobamos también que estén seleccionados los dos.' },
+    pt: { pickTitle: 'Clique no nome da sua Página ou do seu perfil do Instagram',
+      pickText: 'Ele fica no quadro que indica onde o story será publicado. Fique tranquilo: não vamos publicar nada.',
+      cancel: 'Cancelar', which: 'Qual texto vamos usar?', again: 'Escolher de novo', chosen: 'Você escolheu',
+      chosenText: 'Vamos usar exatamente assim, letra por letra. Você ainda pode editar no painel.',
+      use: 'Usar este nome', noText: 'Aqui não tem texto: clique bem em cima do nome.',
+      both: 'Se você publica no Facebook e no Instagram juntos, escolha o texto inteiro: assim também conferimos se os dois estão selecionados.' },
+    fr: { pickTitle: 'Cliquez sur le nom de votre Page ou de votre profil Instagram',
+      pickText: 'Il se trouve dans l’encadré qui indique où la story sera publiée. Rassurez-vous : nous ne publions rien.',
+      cancel: 'Annuler', which: 'Quel texte utilisons-nous ?', again: 'Choisir à nouveau', chosen: 'Vous avez choisi',
+      chosenText: 'Nous l’utiliserons tel quel, lettre par lettre. Vous pourrez toujours le modifier dans le panneau.',
+      use: 'Utiliser ce nom', noText: 'Il n’y a pas de texte ici : cliquez directement sur le nom.',
+      both: 'Si vous publiez sur Facebook et Instagram en même temps, choisissez le texte entier : nous vérifierons aussi que les deux sont sélectionnés.' }
+  };
+  const textsFor = lang => {
+    for (const c of [lang, navigator.language, 'it']) {
+      const code = String(c || '').slice(0, 2).toLowerCase();
+      if (TEXTS[code]) return TEXTS[code];
+    }
+    return TEXTS.it;
+  };
+
   function linesOf(el) {
     const raw = String((el && el.innerText) || '');
     const seen = new Set();
@@ -37,6 +79,7 @@
   function pick(opts = {}) {
     if (active) active.finish({ ok: false, reason: 'restart' });
     const zoom = Math.min(6, Math.max(1, Number(opts.zoom) || 1));
+    const T = textsFor(opts.lang);
     return new Promise(resolve => {
       const host = document.createElement('div');
       host.setAttribute('data-storyflow', 'picker');
@@ -79,31 +122,35 @@
 
       function showPick(note) {
         stage = 'pick';
-        body.innerHTML = '<b>Clicca sul nome della tua Pagina o del tuo profilo Instagram</b>'
-          + '<p>Lo trovi nel riquadro che indica dove verrà pubblicata la storia. Tranquillo: non pubblichiamo nulla.</p>';
+        body.innerHTML = '<b></b><p></p>';
+        body.querySelector('b').textContent = T.pickTitle;
+        body.querySelector('p').textContent = T.pickText;
         if (note) { const p = document.createElement('p'); p.textContent = note; p.style.color = '#b23a48'; body.appendChild(p); }
         const row = document.createElement('div'); row.className = 'row';
-        row.append(button('Annulla', '', () => finish({ ok: false, reason: 'cancel' })));
+        row.append(button(T.cancel, '', () => finish({ ok: false, reason: 'cancel' })));
         body.appendChild(row);
       }
       // choices: testi da proporre; hint: spiegazione facoltativa sotto la domanda.
       function showChoices(choices, hint) {
         stage = 'choose';
-        body.innerHTML = '<b>Quale testo usiamo?</b>';
+        body.innerHTML = '<b></b>';
+        body.querySelector('b').textContent = T.which;
         if (hint) { const p = document.createElement('p'); p.textContent = hint; body.appendChild(p); }
         const row = document.createElement('div'); row.className = 'row';
         choices.forEach(text => row.append(button(text, 'choice', () => showConfirm(text))));
-        row.append(button('Scegli di nuovo', '', () => showPick()));
+        row.append(button(T.again, '', () => showPick()));
         body.appendChild(row);
       }
       function showConfirm(text) {
         stage = 'confirm';
-        body.innerHTML = '<b>Hai scelto <span class="sel"></span></b><p>Lo useremo esattamente così, lettera per lettera. Potrai comunque modificarlo nel pannello.</p>';
+        body.innerHTML = '<b><span class="lbl"></span> <span class="sel"></span></b><p></p>';
+        body.querySelector('.lbl').textContent = T.chosen;
+        body.querySelector('p').textContent = T.chosenText;
         body.querySelector('.sel').textContent = text;
         const row = document.createElement('div'); row.className = 'row';
         row.append(
-          button('Usa questo nome', 'main', () => finish({ ok: true, text })),
-          button('Scegli di nuovo', '', () => showPick())
+          button(T.use, 'main', () => finish({ ok: true, text })),
+          button(T.again, '', () => showPick())
         );
         body.appendChild(row);
       }
@@ -143,13 +190,12 @@
         if (stage !== 'pick') return;
         const el = targetOf(e);
         const lines = linesOf(el);
-        if (!lines.length) return showPick('Qui non c’è testo: clicca proprio sul nome.');
+        if (!lines.length) return showPick(T.noText);
         if (lines.length > 1) { highlight(el); return showChoices(lines); }
         const line = wholeLine(el);
         if (line && line.text !== lines[0]) {
           highlight(line.el);
-          return showChoices([line.text, lines[0]],
-            'Se pubblichi su Facebook e Instagram insieme, scegli tutta la scritta: così controlliamo anche che siano selezionati entrambi.');
+          return showChoices([line.text, lines[0]], T.both);
         }
         highlight(el);
         showConfirm(lines[0]);

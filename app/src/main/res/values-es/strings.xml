@@ -1,0 +1,6 @@
+<resources>
+    <string name="back_to_studio">✓ Volver a StoryFlow Studio</string>
+    <string name="publishing_wait">Publicación en curso: espera a que termine.</string>
+    <string name="queue_stalled">Sin avances desde hace 4 minutos: puede que la página de Meta se haya bloqueado.</string>
+    <string name="queue_stopped">Cola detenida a petición</string>
+</resources>

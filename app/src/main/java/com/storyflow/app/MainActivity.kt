@@ -1,7 +1,9 @@
 package com.storyflow.app
 
 import android.annotation.SuppressLint
+import android.content.Context
 import android.content.Intent
+import android.content.res.Configuration
 import android.graphics.Color
 import android.net.Uri
 import android.os.Bundle
@@ -29,6 +31,7 @@ import java.io.StringReader
 import java.net.HttpURLConnection
 import java.net.URL
 import java.security.MessageDigest
+import java.util.Locale
 
 class MainActivity : AppCompatActivity() {
 
@@ -63,6 +66,24 @@ class MainActivity : AppCompatActivity() {
     @Volatile private var metaUrl: String = ""
     private val watchdogHandler = Handler(Looper.getMainLooper())
 
+    // Lingua dei testi dell'app: quella scelta nel pannello (setLanguage, ricordata), altrimenti quella del telefono.
+    private val SUPPORTED_LANGS = setOf("it", "en", "es", "pt", "fr")
+    private val prefs by lazy { getSharedPreferences("storyflow", Context.MODE_PRIVATE) }
+    @Volatile private var uiLang: String = ""
+
+    private fun currentLang(): String {
+        if (uiLang.isNotEmpty()) return uiLang
+        val system = Locale.getDefault().language
+        return if (system in SUPPORTED_LANGS) system else "en"
+    }
+
+    private fun str(id: Int): String {
+        if (uiLang.isEmpty()) return getString(id)
+        val conf = Configuration(resources.configuration)
+        conf.setLocale(Locale.forLanguageTag(uiLang))
+        return createConfigurationContext(conf).getString(id)
+    }
+
     // Onboarding: scelta ("pick") o verifica ("verify") del nome della pagina nella pagina delle storie
     // di Meta, con assets/meta-setup.js. Mai insieme a una coda di pubblicazione.
     @Volatile private var setupMode: String? = null
@@ -84,7 +105,7 @@ class MainActivity : AppCompatActivity() {
         override fun run() {
             if (queueRunning) {
                 if (SystemClock.elapsedRealtime() - lastProgressAt > STALL_TIMEOUT_MS) {
-                    failQueue("Nessun avanzamento da 4 minuti: la pagina Meta potrebbe essere bloccata.")
+                    failQueue(str(R.string.queue_stalled))
                     return
                 }
                 val url = metaWebView.url ?: ""
@@ -99,13 +120,14 @@ class MainActivity : AppCompatActivity() {
     // Durante la coda il tasto Indietro non chiude l'app: si fermerebbe la pubblicazione a metà.
     private val queueBackCallback = object : OnBackPressedCallback(false) {
         override fun handleOnBackPressed() {
-            Toast.makeText(this@MainActivity, "Pubblicazione in corso: attendi che finisca.", Toast.LENGTH_SHORT).show()
+            Toast.makeText(this@MainActivity, str(R.string.publishing_wait), Toast.LENGTH_SHORT).show()
         }
     }
 
     @SuppressLint("SetJavaScriptEnabled")
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        uiLang = prefs.getString("lang", "")?.takeIf { it in SUPPORTED_LANGS } ?: ""
 
         engine = EngineManager(this, getString(R.string.engine_manifest_url), getString(R.string.engine_public_key))
         Thread { engine.checkForUpdate() }.start()
@@ -172,7 +194,7 @@ class MainActivity : AppCompatActivity() {
         }
 
         btnCloseMeta = Button(this).apply {
-            text = "✓ Torna a StoryFlow Studio"
+            text = str(R.string.back_to_studio)
             setBackgroundColor(Color.parseColor("#6045e8"))
             setTextColor(Color.WHITE)
             layoutParams = FrameLayout.LayoutParams(
@@ -346,7 +368,8 @@ class MainActivity : AppCompatActivity() {
             put("ok", st.optInt("ok", 0))
             put("err", st.optInt("err", 0))
             put("remainingIds", remaining)
-            put("message", "Coda fermata su richiesta")
+            put("message", str(R.string.queue_stopped))
+            put("msgLang", currentLang())
         })
         endQueue()
     }
@@ -365,6 +388,7 @@ class MainActivity : AppCompatActivity() {
             put("total", st.optInt("total", 1))
             put("dryRun", st.optBoolean("dryRun", false))
             put("message", message)
+            put("msgLang", currentLang())
             put("log", log)
         })
         endQueue()
@@ -410,7 +434,7 @@ class MainActivity : AppCompatActivity() {
         }
         // La pagina desktop è rimpicciolita per stare nello schermo: il riquadro della scelta va ingrandito.
         val zoom = (resources.displayMetrics.density / metaWebView.scaleX.coerceAtLeast(0.1f)).coerceIn(1f, 6f)
-        val call = if (mode == "pick") "window.__sfMetaSetup.pick({zoom:$zoom})"
+        val call = if (mode == "pick") "window.__sfMetaSetup.pick({zoom:$zoom,lang:${JSONObject.quote(currentLang())}})"
             else "window.__sfMetaSetup.verify(${JSONObject.quote(setupText)})"
         metaWebView.evaluateJavascript(
             "$code\n;$call.then(function(r){window.StoryFlowNative.setupResult(JSON.stringify(r));});",
@@ -648,6 +672,15 @@ class MainActivity : AppCompatActivity() {
 
         @JavascriptInterface
         fun getPlatform(): String = "android"
+
+        @JavascriptInterface
+        fun setLanguage(lang: String) {
+            val code = lang.take(2).lowercase(Locale.ROOT)
+            if (code !in SUPPORTED_LANGS || code == uiLang) return
+            uiLang = code
+            prefs.edit().putString("lang", code).apply()
+            runOnUiThread { btnCloseMeta.text = str(R.string.back_to_studio) }
+        }
 
         @JavascriptInterface
         fun pickMetaTarget() {
