@@ -3,11 +3,12 @@
  * https://business.facebook.com/latest/story_composer/ : per correggere un cambio
  * dell'interfaccia Meta basta pubblicare una nuova versione di questo file.
  * Le etichette dei pulsanti sono raccolte in UI_LABELS: aggiungere qui nuove lingue.
+ * I messaggi per l'utente (MESSAGES) seguono la lingua del pannello (uiLang delle storie in coda).
  */
 (function () {
   'use strict';
 
-  const ENGINE_VERSION = '4.0.1';
+  const ENGINE_VERSION = '4.1.2';
 
   // Impedisce che il watchdog avvii due volte lo script sulla stessa pagina
   if (window.__SF_COMPOSER_ACTIVE__) return;
@@ -18,25 +19,71 @@
   const PAUSA = 2000;
 
   // --- ETICHETTE INTERFACCIA META (una voce per lingua; il confronto ignora maiuscole e spazi) ---
+  // en, es, fr, pt: verificate su Meta reale il 29/10/2026 con tools/cattura-etichette-meta.js, tranne discard
+  // (non comparso). linkStickerAria resta in inglese («Create link sticker») in tutte le lingue provate.
   const UI_LABELS = {
-    addMedia: { it: ['Aggiungi foto/video', 'Aggiungi foto o video'], en: ['Add photo/video', 'Add photos/videos', 'Add photo or video'] },
-    addLink: { it: ['Aggiungi link'], en: ['Add link'] },
-    editLink: { it: ['Modifica link'], en: ['Edit link'] },
-    apply: { it: ['Applica'], en: ['Apply'] },
-    edit: { it: ['Modifica'], en: ['Edit'] },
-    editPhotoTitle: { it: ['Modifica foto'], en: ['Edit photo', 'Edit image'] },
-    moreStickers: { it: ['Altri adesivi'], en: ['More stickers'] },
-    cancel: { it: ['Annulla'], en: ['Cancel'] },
+    addMedia: { it: ['Aggiungi foto/video', 'Aggiungi foto o video'], en: ['Add photo/video', 'Add photos/videos', 'Add photo or video'], es: ['Agregar foto/video'], fr: ['Ajouter une photo/vidéo'], pt: ['Adicionar foto/vídeo'] },
+    addLink: { it: ['Aggiungi link'], en: ['Add link'], es: ['Agregar enlace'], fr: ['Ajouter un lien'], pt: ['Adicionar link'] },
+    editLink: { it: ['Modifica link'], en: ['Edit link'], es: ['Editar enlace'], fr: ['Modifier le lien'], pt: ['Editar link'] },
+    apply: { it: ['Applica'], en: ['Apply'], es: ['Aplicar'], fr: ['Appliquer'], pt: ['Aplicar'] },
+    edit: { it: ['Modifica'], en: ['Edit'], es: ['Editar'], fr: ['Modifier'], pt: ['Editar'] },
+    editPhotoTitle: { it: ['Modifica foto'], en: ['Edit photo', 'Edit image'], es: ['Editar foto'], fr: ['Modifier la photo'], pt: ['Editar foto'] },
+    moreStickers: { it: ['Altri adesivi'], en: ['More stickers'], es: ['Más stickers'], fr: ['Plus de stickers'], pt: ['Mais figurinhas'] },
+    cancel: { it: ['Annulla'], en: ['Cancel'], es: ['Cancelar'], fr: ['Annuler'], pt: ['Cancelar'] },
     discard: { it: ['Elimina modifiche'], en: ['Discard changes', 'Discard edits'] },
-    share: { it: ['Condividi', 'Condividi ora'], en: ['Share', 'Share now'] },
-    linkStickerHeading: { it: ['Aggiungi adesivo con link', 'Aggiungi adesivo link'], en: ['Add link sticker', 'Add a link sticker'] },
-    linkStickerMenu: { it: ['Link', '🔗 Link'], en: ['Link', '🔗 Link'] },
-    linkStickerAria: { it: ['Crea adesivo con link', 'Crea adesivo link'], en: ['Create link sticker'] },
-    removeAria: { it: ['Rimuovi', 'remove'], en: ['Remove', 'remove'] }
+    share: { it: ['Condividi', 'Condividi ora'], en: ['Share', 'Share now'], es: ['Compartir', 'Compartir ahora'], fr: ['Partager', 'Partager maintenant'], pt: ['Compartilhar', 'Compartilhar agora'] },
+    linkStickerHeading: { it: ['Aggiungi adesivo con link', 'Aggiungi adesivo link'], en: ['Add link sticker', 'Add a link sticker'], es: ['Agregar sticker de enlace'], fr: ['Ajouter un sticker à lien'], pt: ['Adicionar figurinha de link'] },
+    linkStickerMenu: { it: ['Link', '🔗 Link'], en: ['Link', '🔗 Link'], es: ['Enlace', '🔗 Enlace'], fr: ['Lien', '🔗 Lien'], pt: ['Link', '🔗 Link'] },
+    linkStickerAria: { it: ['Crea adesivo con link', 'Crea adesivo link'], en: ['Create link sticker'], es: ['Create link sticker'], fr: ['Create link sticker'], pt: ['Create link sticker'] },
+    removeAria: { it: ['Rimuovi', 'remove'], en: ['Remove', 'remove'], es: ['remove'], fr: ['remove'], pt: ['remove'] }
   };
-  const SHARED_WORDS = '(?:condivisa|pubblicata|shared|published|posted)';
+  const SHARED_WORDS = '(?:condivisa|pubblicata|shared|published|posted|publiée|publicado)';
   const STORY_WORDS = '(?:storia|story)';
   const SHARED_RE = new RegExp(`${STORY_WORDS}.{0,40}${SHARED_WORDS}|${SHARED_WORDS}.{0,40}${STORY_WORDS}`, 'i');
+  // Avvisi di pubblicazione ancora in corso ("Your story is being published", "Seu story está sendo publicado"):
+  // non sono una conferma.
+  const IN_PROGRESS_RE = /\b(?:is|are) being (?:shared|published|posted)\b|est[aá] sendo (?:publicad|compartilhad)[oa]s?/gi;
+  const sharedConfirmed = text => SHARED_RE.test(String(text || '').replace(IN_PROGRESS_RE, ''));
+
+  // --- MESSAGGI PER L'UTENTE (avanzamento e riquadro in alto a sinistra), nella lingua del pannello ---
+  // I messaggi d'errore tecnici restano in italiano: finiscono nel rapporto per l'assistenza.
+  const MESSAGES = {
+    it: { preview: 'elaborazione anteprima grafica in corso...', removeDefault: 'rimozione sticker Link predefinito...',
+      activate: 'attivazione sticker interattivo...', configure: 'configurazione pulsante ({text})', verify: 'Verifica presenza e posizione adesivo',
+      init: 'Inizializzazione pagina...', start: 'Avvio storia {i} di {n}', image: 'Caricamento immagine', link: 'Inserimento collegamento',
+      sticker: 'Creazione adesivo cliccabile', testDone: 'Test completato con successo!', publish: 'Pubblicazione automatica in corso',
+      retry: 'Riconnessione automatica storia {i} di {n}…', doneOk: 'Coda conclusa con successo: {ok} pubblicate, 0 errori',
+      doneErr: 'Coda conclusa: {ok} pubblicate, {err} non riuscite ({reason})', checkLog: 'verifica registro', system: 'il sistema' },
+    en: { preview: 'processing the design preview...', removeDefault: 'removing the default link sticker...',
+      activate: 'activating the interactive sticker...', configure: 'setting up the button ({text})', verify: 'Checking that the sticker is in place',
+      init: 'Setting up the page...', start: 'Starting story {i} of {n}', image: 'Uploading image', link: 'Adding the link',
+      sticker: 'Creating the clickable sticker', testDone: 'Test completed successfully!', publish: 'Publishing automatically',
+      retry: 'Reconnecting automatically, story {i} of {n}…', doneOk: 'Queue finished: {ok} published, 0 errors',
+      doneErr: 'Queue finished: {ok} published, {err} failed ({reason})', checkLog: 'check the log', system: 'the system' },
+    es: { preview: 'procesando la vista previa del diseño...', removeDefault: 'quitando el sticker de enlace predeterminado...',
+      activate: 'activando el sticker interactivo...', configure: 'configurando el botón ({text})', verify: 'Comprobando que el sticker esté en su sitio',
+      init: 'Preparando la página...', start: 'Empezando la historia {i} de {n}', image: 'Subiendo la imagen', link: 'Agregando el enlace',
+      sticker: 'Creando el sticker con enlace', testDone: '¡Prueba completada con éxito!', publish: 'Publicando automáticamente',
+      retry: 'Reconectando automáticamente, historia {i} de {n}…', doneOk: 'Cola terminada: {ok} publicadas, 0 errores',
+      doneErr: 'Cola terminada: {ok} publicadas, {err} fallidas ({reason})', checkLog: 'revisa el registro', system: 'el sistema' },
+    pt: { preview: 'processando a prévia da arte...', removeDefault: 'removendo a figurinha de link padrão...',
+      activate: 'ativando a figurinha interativa...', configure: 'configurando o botão ({text})', verify: 'Conferindo se a figurinha está no lugar certo',
+      init: 'Preparando a página...', start: 'Começando o story {i} de {n}', image: 'Enviando a imagem', link: 'Adicionando o link',
+      sticker: 'Criando a figurinha clicável', testDone: 'Teste concluído com sucesso!', publish: 'Publicando automaticamente',
+      retry: 'Reconectando automaticamente, story {i} de {n}…', doneOk: 'Fila concluída: {ok} publicados, 0 erros',
+      doneErr: 'Fila concluída: {ok} publicados, {err} com falha ({reason})', checkLog: 'confira o registro', system: 'o sistema' },
+    fr: { preview: 'traitement de l’aperçu du visuel...', removeDefault: 'suppression du sticker à lien par défaut...',
+      activate: 'activation du sticker interactif...', configure: 'configuration du bouton ({text})', verify: 'Vérification de la présence et de la position du sticker',
+      init: 'Préparation de la page...', start: 'Début de la story {i} sur {n}', image: 'Envoi de l’image', link: 'Ajout du lien',
+      sticker: 'Création du sticker cliquable', testDone: 'Test réussi !', publish: 'Publication automatique en cours',
+      retry: 'Reconnexion automatique, story {i} sur {n}…', doneOk: 'File terminée : {ok} publiées, 0 erreur',
+      doneErr: 'File terminée : {ok} publiées, {err} en échec ({reason})', checkLog: 'consultez le journal', system: 'le système' }
+  };
+  // Prima della coda la lingua è quella del browser; poi quella scelta nel pannello (uiLang delle storie).
+  // Senza uiLang (pannello precedente, solo italiano) si resta in italiano.
+  let uiLang = MESSAGES[String(navigator.language || '').slice(0, 2)] ? String(navigator.language).slice(0, 2) : 'it';
+  const msg = (key, params = {}) => String((MESSAGES[uiLang] || MESSAGES.it)[key] || MESSAGES.it[key] || key)
+    .replace(/\{(\w+)\}/g, (m, k) => (params[k] !== undefined ? String(params[k]) : m));
 
   const pageLang = () => String(document.documentElement.lang || navigator.language || 'it').slice(0, 2).toLowerCase();
   const norm = s => String(s || '').normalize('NFC').replace(/\s+/g, ' ').trim().toLowerCase();
@@ -269,7 +316,7 @@
 
   function emitStage(stage, rawMessage) {
     lastStage = stage;
-    const cleanMsg = String(rawMessage || '').replace(/\bMeta\b/gi, 'il sistema');
+    const cleanMsg = String(rawMessage || '').replace(/\bMeta\b/gi, msg('system'));
     const totalStories = S ? (S.dryRun ? 1 : (S.total || (S.done + S.items.length))) : 1;
     const currentStory = S ? (S.done || 1) : 1;
     if (S) {
@@ -279,6 +326,9 @@
         total: totalStories,
         dryRun: S.dryRun,
         message: cleanMsg,
+        msgLang: uiLang,
+        ok: S.ok || 0,
+        err: S.err || 0,
         failedStage: stage === 'error' ? (S.lastError?.stage || '') : '',
         engineVersion: ENGINE_VERSION,
         log: S.log
@@ -343,7 +393,7 @@
       }
       if (!delivered) throw new Error(`Input file non intercettato (input nel DOM: ${document.querySelectorAll('input[type="file"]').length})`);
 
-      status('StoryFlow: elaborazione anteprima grafica in corso...');
+      status('StoryFlow: ' + msg('preview'));
       if (!await waitFor(() => btn('addLink'), 30000)) {
         throw notFound('addLink', 'Dopo il caricamento, pulsante');
       }
@@ -550,7 +600,7 @@
     more.click();
     await sleep(800);
 
-    status('StoryFlow: rimozione sticker Link predefinito...');
+    status('StoryFlow: ' + msg('removeDefault'));
     await removeExistingStickersInEditor();
 
     let h = null;
@@ -570,7 +620,7 @@
       const cx = rect.left + rect.width / 2;
       const cy = rect.top + rect.height / 2;
 
-      status('StoryFlow: attivazione sticker interattivo...');
+      status('StoryFlow: ' + msg('activate'));
       await Bridge.trustedClick(cx, cy);
 
       h = await waitFor(stickerHeading, 6500, 250);
@@ -578,7 +628,7 @@
 
     if (!h) throw new Error(`Popup adesivo Link non aperto dopo il clic automatico (lingua Meta: ${pageLang()})`);
 
-    status(`StoryFlow: configurazione pulsante (${stickerText})`);
+    status('StoryFlow: ' + msg('configure', { text: stickerText }));
     let pop = h; while (pop && pop.querySelectorAll('input').length < 2) pop = pop.parentElement;
     if (!pop) throw new Error('Campi dell\'adesivo link non trovati');
     const [iu, it] = pop.querySelectorAll('input');
@@ -630,7 +680,7 @@
     for (let a = 1; a <= STICKER_TRIES; a++) {
       try {
         lastPos = await addLinkSticker(url, stickerText);
-        emitStage('verify', 'Verifica presenza e posizione adesivo');
+        emitStage('verify', msg('verify'));
         const v = await verifySticker();
         if (v.ok) return { pos: lastPos, tries: a };
         last = v.why;
@@ -655,13 +705,13 @@
     if (!c) throw notFound('share');
     c.click();
     const ok = await waitFor(() =>
-      !location.pathname.includes('story_composer') || SHARED_RE.test(document.body.innerText), 90000, 500);
+      !location.pathname.includes('story_composer') || sharedConfirmed(document.body.innerText), 90000, 500);
     if (ok) await sleep(3500);
     return !!ok;
   }
 
   async function main() {
-    setHud('Inizializzazione pagina...');
+    setHud(msg('init'));
     await waitFor(() => document.body && document.readyState !== 'loading', 60000, 200);
     await sleep(2500);
     S = await Bridge.getState();
@@ -672,10 +722,12 @@
     if (!Array.isArray(S.log)) S.log = [];
 
     const it = S.items[0];
+    const lang = String(it.uiLang || S.uiLang || '').slice(0, 2);
+    uiLang = MESSAGES[lang] ? lang : 'it';
     S.total = S.total || S.done + S.items.length;
     const currentIndex = S.done + 1;
     S.log.push(`Motore ${ENGINE_VERSION} · lingua Meta: ${pageLang()}`);
-    emitStage('start', `Avvio storia ${currentIndex} di ${S.total}`);
+    emitStage('start', msg('start', { i: currentIndex, n: S.total }));
 
     try {
       if (it.metaTarget) {
@@ -684,11 +736,11 @@
         }
       }
       const blob = dataUrlToBlob(it.dataUrl);
-      emitStage('image', 'Caricamento immagine');
+      emitStage('image', msg('image'));
       await uploadImage(blob, it.id);
-      emitStage('link', 'Inserimento collegamento');
+      emitStage('link', msg('link'));
       await addSwipeLink(it.url);
-      emitStage('sticker', 'Creazione adesivo cliccabile');
+      emitStage('sticker', msg('sticker'));
       const v = await stickerVerified(it.url, it.stickerText || hostLabel(it.url));
 
       if (S.dryRun) {
@@ -696,12 +748,12 @@
         S.log.push(`TEST OK (non condivisa): ${it.title} | pos ${v.pos.t}-${v.pos.b}`);
         S.items.shift();
         await Bridge.saveState(S);
-        emitStage('done', 'Test completato con successo!');
+        emitStage('done', msg('testDone'));
         setTimeout(() => Bridge.finishQueue(), 1500);
         return;
       }
 
-      emitStage('publish', 'Pubblicazione automatica in corso');
+      emitStage('publish', msg('publish'));
       const shared = await share();
       if (!shared) throw new Error('Conferma di pubblicazione non ricevuta entro il limite previsto');
       S.done++;
@@ -715,7 +767,7 @@
       if (it._retries <= 1) {
         S.log.push(` ↻ Riprovo storia ${it.id} (${failedStage}: ${message})`);
         await Bridge.saveState(S);
-        emitStage('start', `Riconnessione automatica storia ${currentIndex} di ${S.total}…`);
+        emitStage('start', msg('retry', { i: currentIndex, n: S.total }));
         await sleep(2500);
         Bridge.nextStory(S.dryRun);
         return;
@@ -732,8 +784,8 @@
     await Bridge.saveState(S);
     if (!S.items.length) {
       const finishMessage = S.err
-        ? `Coda conclusa: ${S.ok} pubblicate, ${S.err} non riuscite (${S.lastError?.message || 'verifica registro'})`
-        : `Coda conclusa con successo: ${S.ok} pubblicate, 0 errori`;
+        ? msg('doneErr', { ok: S.ok, err: S.err, reason: S.lastError?.message || msg('checkLog') })
+        : msg('doneOk', { ok: S.ok });
       emitStage(S.err ? 'error' : 'done', finishMessage);
       setTimeout(() => Bridge.finishQueue(), 1800);
       return;
