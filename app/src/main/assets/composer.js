@@ -8,7 +8,7 @@
 (function () {
   'use strict';
 
-  const ENGINE_VERSION = '4.1.1';
+  const ENGINE_VERSION = '4.1.2';
 
   // Impedisce che il watchdog avvii due volte lo script sulla stessa pagina
   if (window.__SF_COMPOSER_ACTIVE__) return;
@@ -19,28 +19,30 @@
   const PAUSA = 2000;
 
   // --- ETICHETTE INTERFACCIA META (una voce per lingua; il confronto ignora maiuscole e spazi) ---
-  // en: verificate su Meta reale il 29/10/2026 con tools/cattura-etichette-meta.js, tranne discard (non comparso).
+  // en, es, fr, pt: verificate su Meta reale il 29/10/2026 con tools/cattura-etichette-meta.js, tranne discard
+  // (non comparso). linkStickerAria resta in inglese («Create link sticker») in tutte le lingue provate.
   const UI_LABELS = {
-    addMedia: { it: ['Aggiungi foto/video', 'Aggiungi foto o video'], en: ['Add photo/video', 'Add photos/videos', 'Add photo or video'] },
-    addLink: { it: ['Aggiungi link'], en: ['Add link'] },
-    editLink: { it: ['Modifica link'], en: ['Edit link'] },
-    apply: { it: ['Applica'], en: ['Apply'] },
-    edit: { it: ['Modifica'], en: ['Edit'] },
-    editPhotoTitle: { it: ['Modifica foto'], en: ['Edit photo', 'Edit image'] },
-    moreStickers: { it: ['Altri adesivi'], en: ['More stickers'] },
-    cancel: { it: ['Annulla'], en: ['Cancel'] },
+    addMedia: { it: ['Aggiungi foto/video', 'Aggiungi foto o video'], en: ['Add photo/video', 'Add photos/videos', 'Add photo or video'], es: ['Agregar foto/video'], fr: ['Ajouter une photo/vidéo'], pt: ['Adicionar foto/vídeo'] },
+    addLink: { it: ['Aggiungi link'], en: ['Add link'], es: ['Agregar enlace'], fr: ['Ajouter un lien'], pt: ['Adicionar link'] },
+    editLink: { it: ['Modifica link'], en: ['Edit link'], es: ['Editar enlace'], fr: ['Modifier le lien'], pt: ['Editar link'] },
+    apply: { it: ['Applica'], en: ['Apply'], es: ['Aplicar'], fr: ['Appliquer'], pt: ['Aplicar'] },
+    edit: { it: ['Modifica'], en: ['Edit'], es: ['Editar'], fr: ['Modifier'], pt: ['Editar'] },
+    editPhotoTitle: { it: ['Modifica foto'], en: ['Edit photo', 'Edit image'], es: ['Editar foto'], fr: ['Modifier la photo'], pt: ['Editar foto'] },
+    moreStickers: { it: ['Altri adesivi'], en: ['More stickers'], es: ['Más stickers'], fr: ['Plus de stickers'], pt: ['Mais figurinhas'] },
+    cancel: { it: ['Annulla'], en: ['Cancel'], es: ['Cancelar'], fr: ['Annuler'], pt: ['Cancelar'] },
     discard: { it: ['Elimina modifiche'], en: ['Discard changes', 'Discard edits'] },
-    share: { it: ['Condividi', 'Condividi ora'], en: ['Share', 'Share now'] },
-    linkStickerHeading: { it: ['Aggiungi adesivo con link', 'Aggiungi adesivo link'], en: ['Add link sticker', 'Add a link sticker'] },
-    linkStickerMenu: { it: ['Link', '🔗 Link'], en: ['Link', '🔗 Link'] },
-    linkStickerAria: { it: ['Crea adesivo con link', 'Crea adesivo link'], en: ['Create link sticker'] },
-    removeAria: { it: ['Rimuovi', 'remove'], en: ['Remove', 'remove'] }
+    share: { it: ['Condividi', 'Condividi ora'], en: ['Share', 'Share now'], es: ['Compartir', 'Compartir ahora'], fr: ['Partager', 'Partager maintenant'], pt: ['Compartilhar', 'Compartilhar agora'] },
+    linkStickerHeading: { it: ['Aggiungi adesivo con link', 'Aggiungi adesivo link'], en: ['Add link sticker', 'Add a link sticker'], es: ['Agregar sticker de enlace'], fr: ['Ajouter un sticker à lien'], pt: ['Adicionar figurinha de link'] },
+    linkStickerMenu: { it: ['Link', '🔗 Link'], en: ['Link', '🔗 Link'], es: ['Enlace', '🔗 Enlace'], fr: ['Lien', '🔗 Lien'], pt: ['Link', '🔗 Link'] },
+    linkStickerAria: { it: ['Crea adesivo con link', 'Crea adesivo link'], en: ['Create link sticker'], es: ['Create link sticker'], fr: ['Create link sticker'], pt: ['Create link sticker'] },
+    removeAria: { it: ['Rimuovi', 'remove'], en: ['Remove', 'remove'], es: ['remove'], fr: ['remove'], pt: ['remove'] }
   };
-  const SHARED_WORDS = '(?:condivisa|pubblicata|shared|published|posted)';
+  const SHARED_WORDS = '(?:condivisa|pubblicata|shared|published|posted|publiée|publicado)';
   const STORY_WORDS = '(?:storia|story)';
   const SHARED_RE = new RegExp(`${STORY_WORDS}.{0,40}${SHARED_WORDS}|${SHARED_WORDS}.{0,40}${STORY_WORDS}`, 'i');
-  // Avvisi di pubblicazione ancora in corso ("Your story is being published"): non sono una conferma.
-  const IN_PROGRESS_RE = /\b(?:is|are) being (?:shared|published|posted)\b/gi;
+  // Avvisi di pubblicazione ancora in corso ("Your story is being published", "Seu story está sendo publicado"):
+  // non sono una conferma.
+  const IN_PROGRESS_RE = /\b(?:is|are) being (?:shared|published|posted)\b|est[aá] sendo (?:publicad|compartilhad)[oa]s?/gi;
   const sharedConfirmed = text => SHARED_RE.test(String(text || '').replace(IN_PROGRESS_RE, ''));
 
   // --- MESSAGGI PER L'UTENTE (avanzamento e riquadro in alto a sinistra), nella lingua del pannello ---
@@ -60,7 +62,7 @@
       doneErr: 'Queue finished: {ok} published, {err} failed ({reason})', checkLog: 'check the log', system: 'the system' },
     es: { preview: 'procesando la vista previa del diseño...', removeDefault: 'quitando el sticker de enlace predeterminado...',
       activate: 'activando el sticker interactivo...', configure: 'configurando el botón ({text})', verify: 'Comprobando que el sticker esté en su sitio',
-      init: 'Preparando la página...', start: 'Empezando la historia {i} de {n}', image: 'Subiendo la imagen', link: 'Añadiendo el enlace',
+      init: 'Preparando la página...', start: 'Empezando la historia {i} de {n}', image: 'Subiendo la imagen', link: 'Agregando el enlace',
       sticker: 'Creando el sticker con enlace', testDone: '¡Prueba completada con éxito!', publish: 'Publicando automáticamente',
       retry: 'Reconectando automáticamente, historia {i} de {n}…', doneOk: 'Cola terminada: {ok} publicadas, 0 errores',
       doneErr: 'Cola terminada: {ok} publicadas, {err} fallidas ({reason})', checkLog: 'revisa el registro', system: 'el sistema' },
@@ -70,7 +72,7 @@
       sticker: 'Criando a figurinha clicável', testDone: 'Teste concluído com sucesso!', publish: 'Publicando automaticamente',
       retry: 'Reconectando automaticamente, story {i} de {n}…', doneOk: 'Fila concluída: {ok} publicados, 0 erros',
       doneErr: 'Fila concluída: {ok} publicados, {err} com falha ({reason})', checkLog: 'confira o registro', system: 'o sistema' },
-    fr: { preview: 'traitement de l’aperçu du visuel...', removeDefault: 'suppression du sticker lien par défaut...',
+    fr: { preview: 'traitement de l’aperçu du visuel...', removeDefault: 'suppression du sticker à lien par défaut...',
       activate: 'activation du sticker interactif...', configure: 'configuration du bouton ({text})', verify: 'Vérification de la présence et de la position du sticker',
       init: 'Préparation de la page...', start: 'Début de la story {i} sur {n}', image: 'Envoi de l’image', link: 'Ajout du lien',
       sticker: 'Création du sticker cliquable', testDone: 'Test réussi !', publish: 'Publication automatique en cours',
