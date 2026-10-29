@@ -8,7 +8,7 @@
 (function () {
   'use strict';
 
-  const ENGINE_VERSION = '4.1.0';
+  const ENGINE_VERSION = '4.1.1';
 
   // Impedisce che il watchdog avvii due volte lo script sulla stessa pagina
   if (window.__SF_COMPOSER_ACTIVE__) return;
@@ -19,6 +19,7 @@
   const PAUSA = 2000;
 
   // --- ETICHETTE INTERFACCIA META (una voce per lingua; il confronto ignora maiuscole e spazi) ---
+  // en: verificate su Meta reale il 29/10/2026 con tools/cattura-etichette-meta.js, tranne discard (non comparso).
   const UI_LABELS = {
     addMedia: { it: ['Aggiungi foto/video', 'Aggiungi foto o video'], en: ['Add photo/video', 'Add photos/videos', 'Add photo or video'] },
     addLink: { it: ['Aggiungi link'], en: ['Add link'] },
@@ -38,6 +39,9 @@
   const SHARED_WORDS = '(?:condivisa|pubblicata|shared|published|posted)';
   const STORY_WORDS = '(?:storia|story)';
   const SHARED_RE = new RegExp(`${STORY_WORDS}.{0,40}${SHARED_WORDS}|${SHARED_WORDS}.{0,40}${STORY_WORDS}`, 'i');
+  // Avvisi di pubblicazione ancora in corso ("Your story is being published"): non sono una conferma.
+  const IN_PROGRESS_RE = /\b(?:is|are) being (?:shared|published|posted)\b/gi;
+  const sharedConfirmed = text => SHARED_RE.test(String(text || '').replace(IN_PROGRESS_RE, ''));
 
   // --- MESSAGGI PER L'UTENTE (avanzamento e riquadro in alto a sinistra), nella lingua del pannello ---
   // I messaggi d'errore tecnici restano in italiano: finiscono nel rapporto per l'assistenza.
@@ -699,7 +703,7 @@
     if (!c) throw notFound('share');
     c.click();
     const ok = await waitFor(() =>
-      !location.pathname.includes('story_composer') || SHARED_RE.test(document.body.innerText), 90000, 500);
+      !location.pathname.includes('story_composer') || sharedConfirmed(document.body.innerText), 90000, 500);
     if (ok) await sleep(3500);
     return !!ok;
   }
