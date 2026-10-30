@@ -22,6 +22,8 @@ import android.widget.FrameLayout
 import android.widget.Toast
 import androidx.activity.OnBackPressedCallback
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowInsetsCompat
 import org.json.JSONArray
 import org.json.JSONObject
 import org.xmlpull.v1.XmlPullParser
@@ -294,16 +296,35 @@ class MainActivity : AppCompatActivity() {
         metaWebView.requestLayout()
     }
 
-    private fun setMetaDesktopComposerMode() {
+    // fillScreen: la pagina desktop occupa tutta l'altezza dello schermo invece di una fascia al centro
+    // (scelta del nome della pagina: il riquadro di StoryFlow resta in basso e non copre Meta).
+    // La coda usa sempre DESKTOP_W x DESKTOP_H.
+    private fun setMetaDesktopComposerMode(fillScreen: Boolean = false) {
         metaWebView.settings.userAgentString = DESKTOP_UA
         metaWebView.setInitialScale(100)
-        metaWebView.layoutParams = FrameLayout.LayoutParams(DESKTOP_W, DESKTOP_H, Gravity.CENTER)
 
         val screenW = resources.displayMetrics.widthPixels.toFloat()
+        val screenH = (metaContainer.height.takeIf { it > 0 } ?: resources.displayMetrics.heightPixels).toFloat()
         val fitScale = (screenW / DESKTOP_W.toFloat()).coerceAtMost(1f)
+        val height = if (fillScreen) (screenH / fitScale).toInt().coerceAtLeast(DESKTOP_H) else DESKTOP_H
+        metaWebView.layoutParams = FrameLayout.LayoutParams(DESKTOP_W, height, Gravity.CENTER)
         metaWebView.scaleX = fitScale
         metaWebView.scaleY = fitScale
         metaWebView.requestLayout()
+    }
+
+    // Spazio da lasciare libero sopra e sotto il riquadro della scelta, in pixel della pagina di Meta:
+    // barre di sistema che coprono la vista Meta e, in alto, il pulsante "Torna a StoryFlow Studio".
+    private fun setupSafeArea(): Pair<Float, Float> {
+        val scale = metaWebView.scaleX.coerceAtLeast(0.1f)
+        val bars = ViewCompat.getRootWindowInsets(metaContainer)?.getInsets(WindowInsetsCompat.Type.systemBars())
+        val loc = IntArray(2)
+        metaContainer.getLocationInWindow(loc)
+        val windowH = window.decorView.height
+        val topBar = ((bars?.top ?: 0) - loc[1]).coerceAtLeast(0)
+        val bottomBar = ((bars?.bottom ?: 0) - (windowH - loc[1] - metaContainer.height)).coerceAtLeast(0)
+        val top = maxOf(topBar, if (btnCloseMeta.visibility == View.VISIBLE) btnCloseMeta.bottom else 0)
+        return Pair(top / scale, bottomBar / scale)
     }
 
     private fun loadFreshComposerPage(dryRun: Boolean) {
@@ -412,7 +433,7 @@ class MainActivity : AppCompatActivity() {
         setupMode = mode
         setupText = text.take(200)
         setupInjected = false
-        setMetaDesktopComposerMode()
+        setMetaDesktopComposerMode(fillScreen = mode == "pick")
         metaWebView.loadUrl("${COMPOSER_URL}?sf_setup=${System.currentTimeMillis()}")
         if (mode == "pick") {
             metaContainer.bringToFront()
@@ -434,7 +455,8 @@ class MainActivity : AppCompatActivity() {
         }
         // La pagina desktop è rimpicciolita per stare nello schermo: il riquadro della scelta va ingrandito.
         val zoom = (resources.displayMetrics.density / metaWebView.scaleX.coerceAtLeast(0.1f)).coerceIn(1f, 6f)
-        val call = if (mode == "pick") "window.__sfMetaSetup.pick({zoom:$zoom,lang:${JSONObject.quote(currentLang())}})"
+        val (safeTop, safeBottom) = setupSafeArea()
+        val call = if (mode == "pick") "window.__sfMetaSetup.pick({zoom:$zoom,lang:${JSONObject.quote(currentLang())},safeTop:$safeTop,safeBottom:$safeBottom})"
             else "window.__sfMetaSetup.verify(${JSONObject.quote(setupText)})"
         metaWebView.evaluateJavascript(
             "$code\n;$call.then(function(r){window.StoryFlowNative.setupResult(JSON.stringify(r));});",

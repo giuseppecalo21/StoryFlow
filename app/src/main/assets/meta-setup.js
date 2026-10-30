@@ -2,12 +2,16 @@
  * StoryFlow – strumenti per l'onboarding nella pagina delle storie di Meta Business Suite
  * (https://business.facebook.com/latest/story_composer/). Non pubblica nulla.
  *
- *   window.__sfMetaSetup.pick({zoom, lang})  l'utente clicca sul nome della sua Pagina/profilo e lo copiamo
+ *   window.__sfMetaSetup.pick({zoom, lang, safeTop, safeBottom})
+ *                                      l'utente clicca sul nome della sua Pagina/profilo e lo copiamo
  *                                      esattamente com'è: { ok, text } oppure { ok:false, reason }.
  *                                      zoom ingrandisce il riquadro (Android mostra la pagina desktop rimpicciolita);
- *                                      lang è la lingua del pannello (it, en, es, pt, fr; altrimenti quella del browser)
+ *                                      lang è la lingua del pannello (it, en, es, pt, fr; altrimenti quella del browser);
+ *                                      safeTop/safeBottom: spazio da lasciare libero sopra e sotto (barre di sistema,
+ *                                      pulsanti dell'app), in pixel della pagina
  *   window.__sfMetaSetup.verify(text)  stesso controllo del motore prima di pubblicare
- *                                      (document.body.innerText contiene il testo): { ok, reason, suggestion }
+ *                                      (document.body.innerText contiene il testo, con "e"/"and"/"y"/"et"
+ *                                      tra Pagina e profilo in qualunque lingua): { ok, reason, suggestion }
  *   window.__sfMetaSetup.cancel()      chiude il selettore
  *
  * Non dipende dai nomi dei menu di Meta: è l'utente a indicare il testo nella pagina vera.
@@ -23,37 +27,51 @@
   const sleep = ms => new Promise(r => setTimeout(r, ms));
   const bodyText = () => (document.body && document.body.innerText) || '';
 
+  // "Pagina e profilo" cambia congiunzione con la lingua di Meta (Pagina and profilo, Pagina y profilo…):
+  // il nome scelto con Meta in italiano deve valere anche con Meta in un'altra lingua. Stessa regola del motore.
+  const CONNECTORS = ['e', 'and', 'y', 'et'];
+  function targetVariants(target) {
+    const words = String(target || '').split(' ');
+    const out = [words.join(' ')];
+    words.forEach((w, i) => {
+      if (i === 0 || i === words.length - 1 || !CONNECTORS.includes(w)) return;
+      CONNECTORS.forEach(c => { if (c !== w) out.push([...words.slice(0, i), c, ...words.slice(i + 1)].join(' ')); });
+    });
+    return out;
+  }
+  const findTarget = (page, target) => targetVariants(target).find(v => v && page.includes(v)) || '';
+
   let active = null;
 
   // Testi del riquadro, nella lingua del pannello.
   const TEXTS = {
     it: { pickTitle: 'Clicca sul nome della tua Pagina o del tuo profilo Instagram',
       pickText: 'Lo trovi nel riquadro che indica dove verrà pubblicata la storia. Tranquillo: non pubblichiamo nulla.',
-      cancel: 'Annulla', which: 'Quale testo usiamo?', again: 'Scegli di nuovo', chosen: 'Hai scelto',
+      cancel: 'Annulla', move: 'Sposta il riquadro', which: 'Quale testo usiamo?', again: 'Scegli di nuovo', chosen: 'Hai scelto',
       chosenText: 'Lo useremo esattamente così, lettera per lettera. Potrai comunque modificarlo nel pannello.',
       use: 'Usa questo nome', noText: 'Qui non c’è testo: clicca proprio sul nome.',
       both: 'Se pubblichi su Facebook e Instagram insieme, scegli tutta la scritta: così controlliamo anche che siano selezionati entrambi.' },
     en: { pickTitle: 'Click the name of your Page or your Instagram profile',
       pickText: 'You’ll find it in the box that shows where the story will be published. Don’t worry: we won’t publish anything.',
-      cancel: 'Cancel', which: 'Which text should we use?', again: 'Choose again', chosen: 'You chose',
+      cancel: 'Cancel', move: 'Move this box', which: 'Which text should we use?', again: 'Choose again', chosen: 'You chose',
       chosenText: 'We’ll use it exactly like this, letter for letter. You can still edit it in the panel.',
       use: 'Use this name', noText: 'There’s no text here: click right on the name.',
       both: 'If you publish to Facebook and Instagram together, choose the whole text: that way we also check that both are selected.' },
     es: { pickTitle: 'Haz clic en el nombre de tu página o de tu perfil de Instagram',
       pickText: 'Está en el recuadro que indica dónde se publicará la historia. Tranquilo: no publicamos nada.',
-      cancel: 'Cancelar', which: '¿Qué texto usamos?', again: 'Elegir de nuevo', chosen: 'Has elegido',
+      cancel: 'Cancelar', move: 'Mover este recuadro', which: '¿Qué texto usamos?', again: 'Elegir de nuevo', chosen: 'Has elegido',
       chosenText: 'Lo usaremos tal cual, letra por letra. De todos modos, podrás cambiarlo en el panel.',
       use: 'Usar este nombre', noText: 'Aquí no hay texto: haz clic justo sobre el nombre.',
       both: 'Si publicas en Facebook e Instagram a la vez, elige el texto completo: así comprobamos también que estén seleccionados los dos.' },
     pt: { pickTitle: 'Clique no nome da sua Página ou do seu perfil do Instagram',
       pickText: 'Ele fica no quadro que indica onde o story será publicado. Fique tranquilo: não vamos publicar nada.',
-      cancel: 'Cancelar', which: 'Qual texto vamos usar?', again: 'Escolher de novo', chosen: 'Você escolheu',
+      cancel: 'Cancelar', move: 'Mover este quadro', which: 'Qual texto vamos usar?', again: 'Escolher de novo', chosen: 'Você escolheu',
       chosenText: 'Vamos usar exatamente assim, letra por letra. Você ainda pode editar no painel.',
       use: 'Usar este nome', noText: 'Aqui não tem texto: clique bem em cima do nome.',
       both: 'Se você publica no Facebook e no Instagram juntos, escolha o texto inteiro: assim também conferimos se os dois estão selecionados.' },
     fr: { pickTitle: 'Cliquez sur le nom de votre Page ou de votre profil Instagram',
       pickText: 'Il se trouve dans l’encadré qui indique où la story sera publiée. Rassurez-vous : nous ne publions rien.',
-      cancel: 'Annuler', which: 'Quel texte utilisons-nous ?', again: 'Choisir à nouveau', chosen: 'Vous avez choisi',
+      cancel: 'Annuler', move: 'Déplacer cet encadré', which: 'Quel texte utilisons-nous ?', again: 'Choisir à nouveau', chosen: 'Vous avez choisi',
       chosenText: 'Nous l’utiliserons tel quel, lettre par lettre. Vous pourrez toujours le modifier dans le panneau.',
       use: 'Utiliser ce nom', noText: 'Il n’y a pas de texte ici : cliquez directement sur le nom.',
       both: 'Si vous publiez sur Facebook et Instagram en même temps, choisissez le texte entier : nous vérifierons aussi que les deux sont sélectionnés.' }
@@ -79,6 +97,8 @@
   function pick(opts = {}) {
     if (active) active.finish({ ok: false, reason: 'restart' });
     const zoom = Math.min(6, Math.max(1, Number(opts.zoom) || 1));
+    const safeTop = Math.max(0, Number(opts.safeTop) || 0);
+    const safeBottom = Math.max(0, Number(opts.safeBottom) || 0);
     const T = textsFor(opts.lang);
     return new Promise(resolve => {
       const host = document.createElement('div');
@@ -87,13 +107,15 @@
       const root = host.attachShadow({ mode: 'open' });
       root.innerHTML = `
         <style>
-          .wrap{position:fixed;left:0;right:0;bottom:18px;display:flex;justify-content:center;pointer-events:none}
+          .wrap{position:fixed;left:0;right:0;display:flex;justify-content:center;pointer-events:none}
           .bar{pointer-events:auto;background:#fff;color:#292c40;border:2px solid #6045e8;border-radius:10px;box-shadow:0 14px 40px #1d203a55;
-            font:14px/1.45 system-ui,-apple-system,"Segoe UI",sans-serif;padding:14px 16px;box-sizing:border-box}
-          .k{font-size:10px;letter-spacing:.12em;font-weight:800;color:#6045e8;margin-bottom:4px}
-          b{font-size:15px}
-          p{margin:6px 0 0;color:#5c6075}
-          .row{display:flex;flex-wrap:wrap;gap:8px;margin-top:10px}
+            font:13px/1.4 system-ui,-apple-system,"Segoe UI",sans-serif;padding:10px 14px 12px;box-sizing:border-box}
+          .head{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:2px}
+          .k{font-size:10px;letter-spacing:.12em;font-weight:800;color:#6045e8}
+          button.move{padding:2px 8px;font-size:14px;line-height:1.2;border-color:#e3e0f5;color:#6045e8}
+          b{font-size:14px}
+          p{margin:4px 0 0;color:#5c6075}
+          .row{display:flex;flex-wrap:wrap;gap:8px;margin-top:8px}
           button{font:600 13px system-ui,sans-serif;border-radius:6px;padding:8px 12px;cursor:pointer;border:1px solid #d6d9e4;background:#fff;color:#292c40}
           button.main{background:#6045e8;border-color:#6045e8;color:#fff}
           button.choice{background:#f6f4ff;border-color:#c9bfff;text-align:left}
@@ -101,13 +123,25 @@
           .box{position:fixed;pointer-events:none;border:3px solid #6045e8;border-radius:6px;background:#6045e81f;display:none;box-sizing:border-box}
         </style>
         <div class="box"></div>
-        <div class="wrap"><div class="bar" role="dialog" aria-live="polite"><div class="k">STORYFLOW</div><div class="body"></div></div></div>`;
+        <div class="wrap"><div class="bar" role="dialog" aria-live="polite"><div class="head"><div class="k">STORYFLOW</div></div><div class="body"></div></div></div>`;
       const bar = root.querySelector('.bar');
+      const wrap = root.querySelector('.wrap');
       bar.style.zoom = String(zoom);
       bar.style.width = Math.min(620, (window.innerWidth - 24) / zoom) + 'px';
       const box = root.querySelector('.box');
       const body = root.querySelector('.body');
       let stage = 'pick';
+      // Il riquadro sta in basso; si sposta in alto se copre il testo scelto, oppure a mano con ⇅.
+      let atTop = false;
+      function place(top) {
+        atTop = top;
+        wrap.style.top = top ? safeTop + 12 + 'px' : 'auto';
+        wrap.style.bottom = top ? 'auto' : safeBottom + 12 + 'px';
+      }
+      const covers = r => {
+        const b = bar.getBoundingClientRect();
+        return r.bottom > b.top && r.top < b.bottom && r.right > b.left && r.left < b.right;
+      };
       // Anche i clic sui nostri pulsanti restano qui e non arrivano alla pagina di Meta.
       ['click', 'pointerdown', 'pointerup', 'mousedown', 'mouseup', 'touchstart', 'touchend']
         .forEach(t => bar.addEventListener(t, e => e.stopPropagation()));
@@ -119,6 +153,9 @@
         b.addEventListener('click', onClick);
         return b;
       };
+      const move = button('⇅', 'move', () => place(!atTop));
+      move.title = T.move; move.setAttribute('aria-label', T.move);
+      root.querySelector('.head').appendChild(move);
 
       function showPick(note) {
         stage = 'pick';
@@ -155,10 +192,12 @@
         body.appendChild(row);
       }
 
-      function highlight(el) {
+      // avoid: dopo un clic il riquadro si toglie da sopra il testo scelto (al passaggio del mouse no, ballerebbe).
+      function highlight(el, avoid = false) {
         if (!el || el === document.body || el === document.documentElement) { box.style.display = 'none'; return; }
         const r = el.getBoundingClientRect();
         Object.assign(box.style, { display: 'block', left: r.left - 3 + 'px', top: r.top - 3 + 'px', width: r.width + 6 + 'px', height: r.height + 6 + 'px' });
+        if (avoid && covers(r)) place(!atTop);
       }
       // Il bersaglio è l'elemento più piccolo con del testo, risalendo al massimo di 4 livelli.
       function targetOf(e) {
@@ -191,14 +230,15 @@
         const el = targetOf(e);
         const lines = linesOf(el);
         if (!lines.length) return showPick(T.noText);
-        if (lines.length > 1) { highlight(el); return showChoices(lines); }
+        // Prima il nuovo contenuto, poi l'evidenziazione: il riquadro si sposta in base alla sua altezza finale.
+        if (lines.length > 1) { showChoices(lines); return highlight(el, true); }
         const line = wholeLine(el);
         if (line && line.text !== lines[0]) {
-          highlight(line.el);
-          return showChoices([line.text, lines[0]], T.both);
+          showChoices([line.text, lines[0]], T.both);
+          return highlight(line.el, true);
         }
-        highlight(el);
         showConfirm(lines[0]);
+        highlight(el, true);
       };
       const SWALLOW = ['pointerdown', 'pointerup', 'mousedown', 'mouseup', 'touchstart', 'touchend', 'dblclick', 'contextmenu'];
 
@@ -220,6 +260,7 @@
       window.addEventListener('mousemove', onMove, true);
       window.addEventListener('click', onClick, true);
       document.documentElement.appendChild(host);
+      place(false);
       showPick();
     });
   }
@@ -229,7 +270,7 @@
     if (!target) return { ok: false, reason: 'empty' };
     const end = Date.now() + timeoutMs;
     while (Date.now() < end) {
-      if (bodyText().includes(target)) return { ok: true, text: target };
+      if (findTarget(bodyText(), target)) return { ok: true, text: target };
       await sleep(500);
     }
     // Spesso cambia solo una maiuscola: proponiamo il testo esatto che mostra Meta.

@@ -8,7 +8,7 @@
 (function () {
   'use strict';
 
-  const ENGINE_VERSION = '4.1.2';
+  const ENGINE_VERSION = '4.1.3';
 
   // Impedisce che il watchdog avvii due volte lo script sulla stessa pagina
   if (window.__SF_COMPOSER_ACTIVE__) return;
@@ -17,6 +17,9 @@
   const AUTO_HASHES = ['#sfauto', '#sftest'];
   const STICKER_TRIES = 2;
   const PAUSA = 2000;
+  // Nome della pagina: si aspetta che il composer sia pronto (al massimo TARGET_MS), poi altri TARGET_GRACE_MS.
+  const TARGET_MS = 25000;
+  const TARGET_GRACE_MS = 5000;
 
   // --- ETICHETTE INTERFACCIA META (una voce per lingua; il confronto ignora maiuscole e spazi) ---
   // en, es, fr, pt: verificate su Meta reale il 29/10/2026 con tools/cattura-etichette-meta.js, tranne discard
@@ -43,38 +46,59 @@
   // Avvisi di pubblicazione ancora in corso ("Your story is being published", "Seu story está sendo publicado"):
   // non sono una conferma.
   const IN_PROGRESS_RE = /\b(?:is|are) being (?:shared|published|posted)\b|est[aá] sendo (?:publicad|compartilhad)[oa]s?/gi;
-  const sharedConfirmed = text => SHARED_RE.test(String(text || '').replace(IN_PROGRESS_RE, ''));
+  // Frasi di conferma presenti nel testo. Conta solo una frase comparsa dopo il clic su Condividi:
+  // la pagina può contenere già scritte simili ("dove verrà pubblicata la storia") che non sono conferme.
+  const SHARED_RE_ALL = new RegExp(SHARED_RE.source, 'gi');
+  const confirmations = text => String(text || '').replace(IN_PROGRESS_RE, '').match(SHARED_RE_ALL) || [];
+  function newConfirmation(before, text) {
+    const now = confirmations(text);
+    return now.length > before.length || now.some(c => !before.includes(c));
+  }
+
+  // "Pagina e profilo" cambia congiunzione con la lingua di Meta (Pagina and profilo, Pagina y profilo…):
+  // il nome scelto con Meta in italiano vale anche con Meta in un'altra lingua. Stessa regola di engine/meta-setup.js.
+  const CONNECTORS = ['e', 'and', 'y', 'et'];
+  function targetVariants(target) {
+    const words = String(target || '').split(' ');
+    const out = [words.join(' ')];
+    words.forEach((w, i) => {
+      if (i === 0 || i === words.length - 1 || !CONNECTORS.includes(w)) return;
+      CONNECTORS.forEach(c => { if (c !== w) out.push([...words.slice(0, i), c, ...words.slice(i + 1)].join(' ')); });
+    });
+    return out;
+  }
+  const findTarget = (page, target) => targetVariants(target).find(v => v && page.includes(v)) || '';
 
   // --- MESSAGGI PER L'UTENTE (avanzamento e riquadro in alto a sinistra), nella lingua del pannello ---
   // I messaggi d'errore tecnici restano in italiano: finiscono nel rapporto per l'assistenza.
   const MESSAGES = {
     it: { preview: 'elaborazione anteprima grafica in corso...', removeDefault: 'rimozione sticker Link predefinito...',
       activate: 'attivazione sticker interattivo...', configure: 'configurazione pulsante ({text})', verify: 'Verifica presenza e posizione adesivo',
-      init: 'Inizializzazione pagina...', start: 'Avvio storia {i} di {n}', image: 'Caricamento immagine', link: 'Inserimento collegamento',
+      init: 'Inizializzazione pagina...', target: 'Controllo del nome della pagina', start: 'Avvio storia {i} di {n}', image: 'Caricamento immagine', link: 'Inserimento collegamento',
       sticker: 'Creazione adesivo cliccabile', testDone: 'Test completato con successo!', publish: 'Pubblicazione automatica in corso',
       retry: 'Riconnessione automatica storia {i} di {n}…', doneOk: 'Coda conclusa con successo: {ok} pubblicate, 0 errori',
       doneErr: 'Coda conclusa: {ok} pubblicate, {err} non riuscite ({reason})', checkLog: 'verifica registro', system: 'il sistema' },
     en: { preview: 'processing the design preview...', removeDefault: 'removing the default link sticker...',
       activate: 'activating the interactive sticker...', configure: 'setting up the button ({text})', verify: 'Checking that the sticker is in place',
-      init: 'Setting up the page...', start: 'Starting story {i} of {n}', image: 'Uploading image', link: 'Adding the link',
+      init: 'Setting up the page...', target: 'Checking the page name', start: 'Starting story {i} of {n}', image: 'Uploading image', link: 'Adding the link',
       sticker: 'Creating the clickable sticker', testDone: 'Test completed successfully!', publish: 'Publishing automatically',
       retry: 'Reconnecting automatically, story {i} of {n}…', doneOk: 'Queue finished: {ok} published, 0 errors',
       doneErr: 'Queue finished: {ok} published, {err} failed ({reason})', checkLog: 'check the log', system: 'the system' },
     es: { preview: 'procesando la vista previa del diseño...', removeDefault: 'quitando el sticker de enlace predeterminado...',
       activate: 'activando el sticker interactivo...', configure: 'configurando el botón ({text})', verify: 'Comprobando que el sticker esté en su sitio',
-      init: 'Preparando la página...', start: 'Empezando la historia {i} de {n}', image: 'Subiendo la imagen', link: 'Agregando el enlace',
+      init: 'Preparando la página...', target: 'Comprobando el nombre de la página', start: 'Empezando la historia {i} de {n}', image: 'Subiendo la imagen', link: 'Agregando el enlace',
       sticker: 'Creando el sticker con enlace', testDone: '¡Prueba completada con éxito!', publish: 'Publicando automáticamente',
       retry: 'Reconectando automáticamente, historia {i} de {n}…', doneOk: 'Cola terminada: {ok} publicadas, 0 errores',
       doneErr: 'Cola terminada: {ok} publicadas, {err} fallidas ({reason})', checkLog: 'revisa el registro', system: 'el sistema' },
     pt: { preview: 'processando a prévia da arte...', removeDefault: 'removendo a figurinha de link padrão...',
       activate: 'ativando a figurinha interativa...', configure: 'configurando o botão ({text})', verify: 'Conferindo se a figurinha está no lugar certo',
-      init: 'Preparando a página...', start: 'Começando o story {i} de {n}', image: 'Enviando a imagem', link: 'Adicionando o link',
+      init: 'Preparando a página...', target: 'Conferindo o nome da página', start: 'Começando o story {i} de {n}', image: 'Enviando a imagem', link: 'Adicionando o link',
       sticker: 'Criando a figurinha clicável', testDone: 'Teste concluído com sucesso!', publish: 'Publicando automaticamente',
       retry: 'Reconectando automaticamente, story {i} de {n}…', doneOk: 'Fila concluída: {ok} publicados, 0 erros',
       doneErr: 'Fila concluída: {ok} publicados, {err} com falha ({reason})', checkLog: 'confira o registro', system: 'o sistema' },
     fr: { preview: 'traitement de l’aperçu du visuel...', removeDefault: 'suppression du sticker à lien par défaut...',
       activate: 'activation du sticker interactif...', configure: 'configuration du bouton ({text})', verify: 'Vérification de la présence et de la position du sticker',
-      init: 'Préparation de la page...', start: 'Début de la story {i} sur {n}', image: 'Envoi de l’image', link: 'Ajout du lien',
+      init: 'Préparation de la page...', target: 'Vérification du nom de la page', start: 'Début de la story {i} sur {n}', image: 'Envoi de l’image', link: 'Ajout du lien',
       sticker: 'Création du sticker cliquable', testDone: 'Test réussi !', publish: 'Publication automatique en cours',
       retry: 'Reconnexion automatique, story {i} sur {n}…', doneOk: 'File terminée : {ok} publiées, 0 erreur',
       doneErr: 'File terminée : {ok} publiées, {err} en échec ({reason})', checkLog: 'consultez le journal', system: 'le système' }
@@ -698,14 +722,30 @@
     throw new Error(`Adesivo non confermato (${last})`);
   }
 
+  // Testo della pagina trovato (anche con un'altra congiunzione) oppure '' appena è chiaro che non c'è:
+  // al massimo TARGET_GRACE_MS dopo che il composer è pronto, invece di aspettare sempre TARGET_MS.
+  async function waitForTarget(target) {
+    const end = Date.now() + TARGET_MS;
+    let readyAt = 0;
+    while (Date.now() < end) {
+      const found = findTarget(document.body.innerText, target);
+      if (found) return found;
+      if (!readyAt && btn('addMedia')) readyAt = Date.now();
+      if (readyAt && Date.now() - readyAt > TARGET_GRACE_MS) break;
+      await sleep(250);
+    }
+    return '';
+  }
+
   async function share() {
     if (editor()) throw new Error('Editor ancora aperto prima di Condividi');
     await sleep(PAUSA);
     const c = btn('share');
     if (!c) throw notFound('share');
+    const before = confirmations(document.body.innerText);
     c.click();
     const ok = await waitFor(() =>
-      !location.pathname.includes('story_composer') || sharedConfirmed(document.body.innerText), 90000, 500);
+      !location.pathname.includes('story_composer') || newConfirmation(before, document.body.innerText), 90000, 500);
     if (ok) await sleep(3500);
     return !!ok;
   }
@@ -731,9 +771,15 @@
 
     try {
       if (it.metaTarget) {
-        if (!await waitFor(() => document.body.innerText.includes(it.metaTarget), 25000)) {
-          throw new Error(`Canale "${it.metaTarget}" non trovato. Verifica l'accesso in Account Meta.`);
+        // Senza il nome nel messaggio: finirebbe nel riquadro in alto a sinistra e il motore lo troverebbe lì.
+        emitStage('start', msg('target'));
+        const found = await waitForTarget(it.metaTarget);
+        if (!found) {
+          const e = new Error(`Canale "${it.metaTarget}" non trovato. Verifica l'accesso in Account Meta.`);
+          e.fatal = true;
+          throw e;
         }
+        if (found !== it.metaTarget) S.log.push(`Pagina trovata come "${found}" (lingua Meta: ${pageLang()})`);
       }
       const blob = dataUrlToBlob(it.dataUrl);
       emitStage('image', msg('image'));
@@ -764,7 +810,9 @@
       const message = String(e?.message || e || 'Errore sconosciuto');
 
       it._retries = (it._retries || 0) + 1;
-      if (it._retries <= 1) {
+      // Pagina non trovata: riprovare o passare alle storie successive darebbe lo stesso esito dopo minuti
+      // di attesa. La coda si ferma subito e le storie restano nel pannello.
+      if (it._retries <= 1 && !e?.fatal) {
         S.log.push(` ↻ Riprovo storia ${it.id} (${failedStage}: ${message})`);
         await Bridge.saveState(S);
         emitStage('start', msg('retry', { i: currentIndex, n: S.total }));
@@ -777,6 +825,10 @@
       S.err++;
       S.lastError = { stage: failedStage, message, id: String(it.id || ''), at: Date.now(), engineVersion: ENGINE_VERSION, lang: pageLang() };
       S.log.push(`ERRORE ${it.id}: ${message}`);
+      if (e?.fatal && S.items.length > 1) {
+        S.log.push(`Coda interrotta: ${S.items.length - 1} storie non lavorate`);
+        S.items.length = 1;
+      }
       await Bridge.saveState(S);
     }
 
